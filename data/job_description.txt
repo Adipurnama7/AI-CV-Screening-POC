@@ -1,13 +1,20 @@
-AI Specialist
+Junior Architect
 
-Responsibilities:
-- Develop and maintain AI/ML solutions for business use cases.
-- Build machine learning and deep learning models.
-- Analyze data and evaluate model performance.
+REQUIREMENTS:
+Degree in architecture, interior design, or a related field
+Interior designer/ Architect with minimum 2 years experience in design and build
+Visionary, creative, resilient, problem solver, insightful, learner
+Strong creative and visualization skills
+Excellent technical drawing skills
+Strong communication and project management skills
+Knowledge of software programs such as AutoCAD, Sketchup, Revit
+Good interpersonal and presentation skills
+Knowledge of building codes and regulatory standards
+Available join ASAP
 
-Requirements:
-- Bachelor's degree in Computer Science, Informatics, Information Technology, or related field.
-- Minimum 1 year experience in AI or Machine Learning.
-- Strong Python and SQL skills.
-- Machine Learning and Deep Learning knowledge.
-- Preferred: Computer Vision, PyTorch, TensorFlow.
+RESPONSIBILITIES:
+To support in the creation and development of conceptual designs and ideas.
+Plan, implement and monitor projects from beginning to end.
+Creating work models and modelling for space.
+Working with suppliers to source and procure specs of interior, materials for fittings, furniture, lighting, accessories and decorations.
+Compiling finish timelines and working with project delivery services and facilities.

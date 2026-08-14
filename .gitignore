@@ -6,3 +6,5 @@ results.json
 .ipynb_checkpoints/
 *.pdf
 *.docx
+data/sample_cvs/*
+!data/sample_cvs/README.md
