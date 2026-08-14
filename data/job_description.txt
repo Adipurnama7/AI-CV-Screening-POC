@@ -1,0 +1,13 @@
+AI Specialist
+
+Responsibilities:
+- Develop and maintain AI/ML solutions for business use cases.
+- Build machine learning and deep learning models.
+- Analyze data and evaluate model performance.
+
+Requirements:
+- Bachelor's degree in Computer Science, Informatics, Information Technology, or related field.
+- Minimum 1 year experience in AI or Machine Learning.
+- Strong Python and SQL skills.
+- Machine Learning and Deep Learning knowledge.
+- Preferred: Computer Vision, PyTorch, TensorFlow.

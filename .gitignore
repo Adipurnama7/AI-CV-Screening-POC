@@ -1,0 +1,8 @@
+.venv/
+__pycache__/
+*.pyc
+results.json
+.env
+.ipynb_checkpoints/
+*.pdf
+*.docx
