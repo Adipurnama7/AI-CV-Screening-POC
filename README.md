@@ -63,8 +63,6 @@ Proof of Concept (PoC)
 
 Sistem saat ini berfokus pada proses screening dan ranking CV menggunakan data CV yang tersedia pada folder: **data/sample_cvs/**
 
-Berikut adalah panduan cara menjalankan sistem tersebut dengan format Markdown yang lebih rapi dan terstruktur:
-
 ---
 
 # Panduan Menjalankan Sistem Screening CV
