@@ -1,1050 +1,1826 @@
-# ============================================================
-# matcher.py — parsing Job Description & scoring kandidat.
-# ============================================================
-
+from pathlib import Path
+from datetime import datetime, date
 import re
-import difflib
-
-from sentence_transformers import SentenceTransformer
-from sklearn.metrics.pairwise import cosine_similarity
-
-from .extractor import (
-    extract_skills,
-    normalize_text,
-    extract_education_field_phrases,
-    SKILL_ALIASES as EXTRACTOR_SKILL_ALIASES,
-)
-
-
-DEFAULT_MODEL = (
-    "sentence-transformers/all-MiniLM-L6-v2"
-)
 
 
 # ============================================================
-# EDUCATION KEYWORDS — legacy booster (fallback saja)
+# DOCUMENT EXTRACTION
 # ============================================================
 
-EDUCATION_KEYWORDS = {
-    "architecture": ["architecture", "architectural", "arsitektur"],
-    "interior design": ["interior design", "interior designer", "interior architecture", "interior architect"],
-    "design": ["design", "desain"],
-    "engineering": ["engineering", "engineer", "teknik"],
-}
+def extract_text(path: str) -> str:
+    """
+    Extract text from PDF, DOCX, TXT, or MD.
+    """
+    p = Path(path)
+    ext = p.suffix.lower()
 
+    if ext == ".pdf":
+        import fitz
 
-# ============================================================
-# LEGACY ARCHITECTURE SKILL SETS — hanya dipakai sebagai
-# safety-net kalau ekstraksi dinamis benar-benar tidak
-# menemukan apa pun (JD dengan format sangat tidak biasa).
-# ============================================================
+        doc = fitz.open(p)
+        return "\n".join(page.get_text() for page in doc)
 
-ARCHITECTURE_HARD_SKILLS = {
-    "autocad",
-    "sketchup",
-    "revit",
-    "technical drawing",
-}
+    if ext == ".docx":
+        from docx import Document
 
-ARCHITECTURE_SUPPORTING_SKILLS = {
-    "architectural design",
-    "interior design",
-    "3d modeling",
-    "visualization",
-    "project management",
-    "material specification",
-    "building codes",
-}
+        doc = Document(p)
 
+        parts = [
+            para.text
+            for para in doc.paragraphs
+            if para.text.strip()
+        ]
 
-SOFT_SKILLS = [
-    "creativity", "problem solving", "communication", "presentation",
-    "teamwork", "interpersonal", "critical thinking", "attention to detail",
-    "time management", "learner", "adaptability",
-]
+        for table in doc.tables:
+            for row in table.rows:
+                parts.append(
+                    " | ".join(cell.text for cell in row.cells)
+                )
 
-DOMAIN_KNOWLEDGE = [
-    "building codes", "building regulations", "regulatory standards",
-    "construction", "design and build", "visualization",
-    "space planning", "material specification",
-]
+        return "\n".join(parts)
 
-
-RELATED_SKILL_ALIASES = {
-    "technical drawing": [
-        "technical drawing", "technical drawings", "architectural drawing",
-        "architectural drawings", "working drawing", "working drawings",
-        "shop drawing", "shop drawings", "as-built drawing", "as-built drawings",
-        "detailed drawing", "detailed drawings", "detailed layout drawing",
-        "detailed layout drawings", "layout drawing", "layout drawings",
-        "construction drawing", "construction drawings", "completion drawing",
-        "completion drawings", "project completion details",
-        "drawing project completion details", "gambar kerja", "gambar teknis",
-        "gambar teknik",
-    ],
-    "visualization": [
-        "visualization", "visualisation", "3d visualization", "3d visualisation",
-        "3d modeling", "3d modelling", "rendering", "render", "lumion",
-        "enscape", "v-ray", "vray", "twinmotion", "d5 render",
-    ],
-    "building codes": [
-        "building codes", "building code", "building regulations",
-        "regulatory standards", "local regulations", "local building regulations",
-        "regulatory requirements", "code compliance", "compliance with regulations",
-    ],
-    "project management": [
-        "project management", "project manager", "project coordination",
-        "project coordinator", "project planning", "project monitoring",
-        "project supervision", "manage project", "managed project",
-        "managing project", "coordination meetings", "project owner",
-        "planning consultant",
-    ],
-    "material specification": [
-        "material specification", "material specifications", "material selection",
-        "material sourcing", "material procurement", "select materials",
-        "selecting materials",
-    ],
-    "interior design": [
-        "interior design", "interior designer", "interior architecture",
-        "interior architect", "interior space", "interior spaces", "interior project",
-    ],
-    "architectural design": [
-        "architectural design", "architectural designer", "architecture design",
-        "architectural concept", "building concept", "design concept",
-    ],
-}
-
-
-# ============================================================
-# SKILL NORMALIZATION / CONTROLLED ALIAS MAPPING
-# ============================================================
-
-SKILL_NORMALIZATION = {
-    "autocad": "autocad", "auto cad": "autocad", "autodesk autocad": "autocad",
-
-    "sketchup": "sketchup", "sketch up": "sketchup", "skechup": "sketchup",
-    "skethcup": "sketchup", "sketchtup": "sketchup", "sketchup 3d": "sketchup",
-    "3d sketchup": "sketchup",
-
-    "revit": "revit", "revit architecture": "revit", "autodesk revit": "revit",
-
-    "v-ray": "v-ray", "vray": "v-ray", "v ray": "v-ray",
-
-    "visualization": "visualization", "visualisation": "visualization",
-    "visualization skills": "visualization", "visualisation skills": "visualization",
-    "3d visualization": "visualization", "3d visualisation": "visualization",
-
-    "technical drawing": "technical drawing", "technical drawings": "technical drawing",
-    "architectural drawing": "technical drawing", "architectural drawings": "technical drawing",
-    "working drawing": "technical drawing", "working drawings": "technical drawing",
-    "shop drawing": "technical drawing", "shop drawings": "technical drawing",
-    "as-built drawing": "technical drawing", "as-built drawings": "technical drawing",
-    "detailed drawing": "technical drawing", "detailed drawings": "technical drawing",
-    "detailed layout drawing": "technical drawing", "detailed layout drawings": "technical drawing",
-    "layout drawing": "technical drawing", "layout drawings": "technical drawing",
-    "construction drawing": "technical drawing", "construction drawings": "technical drawing",
-    "completion drawing": "technical drawing", "completion drawings": "technical drawing",
-    "project completion details": "technical drawing",
-    "drawing project completion details": "technical drawing",
-    "gambar kerja": "technical drawing", "gambar teknis": "technical drawing",
-    "gambar teknik": "technical drawing",
-
-    "building code": "building codes", "building codes": "building codes",
-    "building regulations": "building codes", "regulatory standards": "building codes",
-    "local building codes": "building codes", "building standards": "building codes",
-
-    "project management": "project management", "project manager": "project management",
-    "project planning": "project management", "project coordination": "project management",
-
-    "interior design": "interior design", "interior designer": "interior design",
-    "interior architecture": "interior design", "interior architect": "interior design",
-}
-
-
-def normalize_skill(skill: str) -> str:
-    """Normalize a skill into its canonical form."""
-    if not skill:
-        return ""
-    value = str(skill).lower().strip()
-    value = re.sub(r"\s+", " ", value)
-    return SKILL_NORMALIZATION.get(value, value)
-
-
-def skill_aliases(skill: str) -> set:
-    """Return all controlled aliases for a canonical skill."""
-    canonical = normalize_skill(skill)
-    aliases = {canonical}
-    for alias, target in SKILL_NORMALIZATION.items():
-        if target == canonical:
-            aliases.add(alias)
-    return aliases
-
-
-# ============================================================
-# KNOWN CANONICAL SETS
-#
-# KNOWN_TECHNICAL_CANONICALS: skill yang selalu dipertahankan
-# sebagai required/preferred meskipun muncul di tengah kalimat
-# yang "sentence-like" — karena kita sudah tahu persis ini
-# nama skill/tool yang sah.
-#
-# SOFT_SKILL_CANONICALS: hal yang sifatnya soft-trait/personal.
-# Kalau muncul dalam blok Requirements, dialihkan ke soft_skills,
-# TIDAK ikut menghitung skor required_skill_match — inilah yang
-# sebelumnya bikin skor turun karena CV tidak literally menulis
-# kata "communication" atau "creative".
-# ============================================================
-
-SOFT_SKILL_CANONICALS = {
-    "communication", "presentation", "teamwork", "problem solving",
-    "critical thinking", "attention to detail", "time management",
-    "creativity", "interpersonal", "learner", "adaptability",
-}
-
-KNOWN_TECHNICAL_CANONICALS = (
-    set(SKILL_NORMALIZATION.values())
-    | set(EXTRACTOR_SKILL_ALIASES.keys())
-) - SOFT_SKILL_CANONICALS
-
-
-# ============================================================
-# TEXT MATCHING HELPERS
-# ============================================================
-
-def _contains(text, phrase):
-    pattern = r"(?<!\w)" + re.escape(phrase.lower()) + r"(?!\w)"
-    return re.search(pattern, text.lower()) is not None
-
-
-def _fuzzy_contains(text, phrase, threshold=0.84):
-    phrase = phrase.lower().strip()
-    words_p = phrase.split()
-    n = len(words_p)
-    if n == 0 or n > 6:
-        return False
-    words_t = text.lower().split()
-    if len(words_t) < n:
-        return False
-    for i in range(len(words_t) - n + 1):
-        window = " ".join(words_t[i:i + n])
-        ratio = difflib.SequenceMatcher(None, window, phrase).ratio()
-        if ratio >= threshold:
-            return True
-    return False
-
-
-def _fuzzy_ratio(a, b):
-    return difflib.SequenceMatcher(None, a.lower().strip(), b.lower().strip()).ratio()
-
-
-def _semantic_match_batch(semantic_matcher, requirement_phrases, candidate_texts, threshold=0.55):
-    if semantic_matcher is None or not requirement_phrases or not candidate_texts:
-        return set()
-
-    req_embeddings = semantic_matcher.model.encode(
-        list(requirement_phrases), normalize_embeddings=True,
-    )
-    cand_embeddings = semantic_matcher.model.encode(
-        list(candidate_texts), normalize_embeddings=True,
-    )
-    sims = cosine_similarity(req_embeddings, cand_embeddings)
-
-    matched = set()
-    for i, phrase in enumerate(requirement_phrases):
-        if sims[i].max() >= threshold:
-            matched.add(phrase)
-    return matched
-
-
-# ============================================================
-# CONTEXTUAL REQUIREMENT MATCHING
-# ============================================================
-
-def contextual_skill_match(
-    candidate_text,
-    required_items,
-    candidate_skills=None,
-    semantic_matcher=None,
-    candidate_skill_texts=None,
-    semantic_threshold=0.55,
-):
-    required = [normalize_skill(item) for item in (required_items or []) if item]
-    required = list(dict.fromkeys(required))
-
-    if not required:
-        return {"score": None, "matched": [], "missing": []}
-
-    text = str(candidate_text or "").lower()
-    text = re.sub(r"\s+", " ", text)
-
-    candidate_skill_set = set()
-    for skill in candidate_skills or []:
-        canonical = normalize_skill(skill)
-        if canonical:
-            candidate_skill_set.add(canonical)
-
-    matched = []
-    still_missing = []
-
-    for requirement in required:
-        found = requirement in candidate_skill_set
-
-        if not found:
-            for alias in skill_aliases(requirement):
-                if _contains(text, alias):
-                    found = True
-                    break
-
-        if not found:
-            for alias in RELATED_SKILL_ALIASES.get(requirement, []):
-                if _contains(text, alias):
-                    found = True
-                    break
-
-        if not found and requirement == "technical drawing":
-            drawing_terms = ["drawing", "drawings", "gambar"]
-            technical_context = [
-                "architectural", "structural", "construction", "layout",
-                "detailed", "technical", "shop", "as-built", "completion",
-                "project", "mep",
-            ]
-            has_drawing = any(_contains(text, t) for t in drawing_terms)
-            has_context = any(_contains(text, t) for t in technical_context)
-            if has_drawing and has_context:
-                found = True
-
-        if not found:
-            for alias in skill_aliases(requirement) | {requirement}:
-                if _fuzzy_contains(text, alias):
-                    found = True
-                    break
-
-        if found:
-            matched.append(requirement)
-        else:
-            still_missing.append(requirement)
-
-    if still_missing and semantic_matcher is not None and candidate_skill_texts:
-        semantic_matches = _semantic_match_batch(
-            semantic_matcher, still_missing, candidate_skill_texts, semantic_threshold,
+    if ext in {".txt", ".md"}:
+        return p.read_text(
+            encoding="utf-8",
+            errors="ignore"
         )
-        if semantic_matches:
-            matched.extend(semantic_matches)
-            still_missing = [r for r in still_missing if r not in semantic_matches]
 
-    score = len(matched) / len(required)
-    return {"score": score, "matched": matched, "missing": still_missing}
+    raise ValueError(f"Unsupported file type: {ext}")
 
 
 # ============================================================
-# SKILL EVIDENCE EXTRACTION
+# TEXT NORMALIZATION
 # ============================================================
 
-def extract_skill_evidence(candidate_text, matched_skills, max_evidence=3):
-    text = str(candidate_text or "")
-    if not text.strip():
-        return {}
+def normalize_text(text: str) -> str:
+    """
+    Normalize text for matching while preserving the original
+    text elsewhere.
+    """
+    text = text.lower()
 
-    lines = [re.sub(r"\s+", " ", ln).strip() for ln in text.splitlines()]
-    lines = [ln for ln in lines if ln]
+    replacements = {
+        "sketchup": "sketch up",
+        "autocad": "auto cad",
+        "3d visualization": "3d visualization",
+        "3d modelling": "3d modeling",
+        "modelling": "modeling",
+        "interior designer": "interior design",
+        "interior architect": "interior architecture",
+        "architectural drafter": "drafter",
+        "architectural drafting": "technical drawing",
+    }
 
-    evidence = {}
+    for old, new in replacements.items():
+        text = text.replace(old, new)
 
-    for skill in matched_skills:
-        skill_lower = str(skill).lower().strip()
-        search_terms = [skill_lower]
+    return text
 
-        normalized_skill = normalize_skill(skill_lower)
-        search_terms.append(normalized_skill)
+SECTION_HEADERS = {
+    # ========================================================
+    # EDUCATION
+    # ========================================================
 
-        for alias, canonical in SKILL_NORMALIZATION.items():
-            if canonical == normalized_skill:
-                search_terms.append(alias)
+    "education",
+    "education level",
+    "academic background",
+    "academic qualification",
+    "academic qualifications",
+    "educational background",
+    "educational qualification",
+    "education qualification",
 
-        if skill_lower == "technical drawing":
-            search_terms.extend(RELATED_SKILL_ALIASES["technical drawing"])
+    "pendidikan",
+    "riwayat pendidikan",
+    "latar belakang pendidikan",
 
-        search_terms = list(dict.fromkeys(
-            t.lower().strip() for t in search_terms if t
-        ))
+    
+    # ========================================================
+    # EXPERIENCE
+    # ========================================================
 
-        matches = []
-        for line in lines:
-            line_lower = line.lower()
-            if any(term in line_lower for term in search_terms):
-                matches.append(line)
-            if len(matches) >= max_evidence:
-                break
+    "experience",
+    "experiences",
+    "work experience",
+    "work experiences",
+    "professional experience",
+    "professional experiences",
+    "employment history",
+    "career history",
+    "work history",
 
-        if matches:
-            evidence[skill] = matches
+    "pengalaman",
+    "pengalaman kerja",
+    "riwayat kerja",
+    "riwayat karier",
 
-    return evidence
+    # ========================================================
+    # ORGANIZATION
+    # ========================================================
 
+    "organizational experience",
+    "organisational experience",
+    "organizational experiences",
+    "organisational experiences",
+    "organization experience",
+    "organisation experience",
+    "organizational activities",
+    "organisational activities",
 
-# ============================================================
-# JD-SPECIFIC SECTION BOUNDARIES
-#
-# Terpisah dari SECTION_HEADERS di extractor.py (yang dibuat
-# untuk CV) karena JD punya heading yang berbeda — terutama
-# "Responsibilities", yang KALAU tidak dikenali sebagai batas,
-# akan membuat seluruh isi Responsibilities ikut tersedot ke
-# dalam "Requirements" (inilah sumber utama bug sebelumnya).
-# ============================================================
+    "pengalaman organisasi",
+    "organisasi",
+    "kegiatan organisasi",
 
-JD_REQUIRED_HEADERS = [
-    "requirements", "requirement", "qualifications", "qualification",
-    "minimum qualifications", "must have", "mandatory requirements",
-    "job requirements", "key requirements",
-    "kualifikasi", "persyaratan", "syarat", "kriteria",
-]
+    # ========================================================
+    # SKILLS
+    # ========================================================
 
-JD_PREFERRED_HEADERS = [
-    "preferred qualifications", "preferred skills", "nice to have",
-    "good to have", "advantages", "additional qualifications",
-    "plus point", "plus points", "bonus",
-    "nilai tambah", "kualifikasi tambahan",
-]
+    "skills",
+    "skill",
+    "technical skills",
+    "technical skill",
+    "soft skills",
+    "soft skill",
+    "hard skills",
+    "hard skill",
+    "soft and hard skills",
+    "professional skills",
+    "core skills",
 
-JD_RESPONSIBILITY_HEADERS = [
-    "responsibilities", "responsibility", "key responsibilities",
-    "job responsibilities", "duties", "main duties",
-    "what you'll do", "what you will do", "your role",
-    "role and responsibilities", "role & responsibilities",
-    "the role", "job description", "position summary",
-    "tugas", "tanggung jawab", "tugas dan tanggung jawab",
-    "deskripsi pekerjaan", "deskripsi kerja",
-]
+    "keahlian",
+    "keahlian teknis",
+    "kemampuan",
+    "keterampilan",
 
-JD_OTHER_HEADERS = [
-    "about us", "about the company", "about the role", "about this role",
-    "company overview", "overview", "benefits", "what we offer", "perks",
-    "compensation", "salary", "how to apply", "application process",
-    "location", "working hours", "contract type", "employment type",
-    "tentang perusahaan", "tentang kami", "cara melamar", "gaji",
-    "lokasi", "jam kerja", "benefit", "fasilitas",
-]
+    # ========================================================
+    # LANGUAGES
+    # ========================================================
 
-ALL_JD_HEADERS = (
-    JD_REQUIRED_HEADERS + JD_PREFERRED_HEADERS
-    + JD_RESPONSIBILITY_HEADERS + JD_OTHER_HEADERS
-)
+    "languages",
+    "language",
 
+    "bahasa",
+    "bahasa yang dikuasai",
 
-def _jd_header_key(line: str) -> str:
+    # ========================================================
+    # PROJECTS
+    # ========================================================
+
+    "projects",
+    "project experience",
+    "project experiences",
+    "academic projects",
+    "personal projects",
+
+    "proyek",
+    "pengalaman proyek",
+
+    # ========================================================
+    # CERTIFICATIONS / TRAINING
+    # ========================================================
+
+    "certifications",
+    "certification",
+    "certificates",
+    "certificate",
+    "certifications and training",
+    "training",
+    "courses",
+
+    "sertifikasi",
+    "sertifikat",
+    "pelatihan",
+    "kursus",
+
+    # ========================================================
+    # ACHIEVEMENTS
+    # ========================================================
+
+    "achievements",
+    "achievement",
+    "awards",
+    "award",
+    "honors",
+    "honours",
+
+    "pencapaian",
+    "prestasi",
+    "penghargaan",
+
+    # ========================================================
+    # ADDITIONAL INFORMATION
+    # ========================================================
+
+    "additional information",
+    "additional details",
+    "other information",
+    "others",
+
+    "informasi tambahan",
+
+    # ========================================================
+    # NON-FORMAL EDUCATION
+    # ========================================================
+
+    "non-formal education",
+    "non formal education",
+    "informal education",
+
+    "pendidikan non formal",
+    "pendidikan nonformal",
+
+    # ========================================================
+    # VOLUNTEER
+    # ========================================================
+
+    "volunteer experience",
+    "volunteering",
+
+    "pengalaman sukarelawan",
+    "kegiatan sukarela",
+
+    # ========================================================
+    # PUBLICATIONS
+    # ========================================================
+
+    "publications",
+    "publication",
+
+    "publikasi",
+
+    # ========================================================
+    # PROFILE / SUMMARY
+    # ========================================================
+
+    "profile",
+    "summary",
+    "professional summary",
+    "objective",
+    "career objective",
+
+    "profil",
+    "ringkasan",
+    "tujuan karier",
+
+    
+}
+
+def _clean_header(line: str) -> str:
+    """
+    Normalize CV section headers.
+
+    Examples:
+        'WORK EXPERIENCE'
+        'Work Experience'
+        'W O R K E X P E R I E N C E'
+
+    are normalized consistently.
+    """
+
     line = line.lower().strip()
-    line = re.sub(r"[^a-z0-9\s]", " ", line)
-    return re.sub(r"\s+", "", line).strip()
 
+    # Remove decorative characters.
+    line = re.sub(
+        r"[^a-z0-9\s]",
+        " ",
+        line
+    )
 
-_ALL_JD_HEADER_KEYS = {_jd_header_key(h) for h in ALL_JD_HEADERS}
+    # Collapse whitespace.
+    line = re.sub(
+        r"\s+",
+        " ",
+        line
+    ).strip()
 
+    return line
 
-def _line_is_jd_header(line: str, header_keys) -> bool:
+def _header_key(line: str) -> str:
     """
-    True kalau `line` adalah baris heading (bukan isi biasa).
+    Create a comparison key for CV section headers.
 
-    Dibatasi pada baris pendek (<=6 kata) supaya kalimat isi yang
-    kebetulan diawali kata yang sama seperti heading (mis. "Requirements
-    gathering was part of my role...") tidak salah dianggap heading.
+    This makes these equivalent:
+
+        WORK EXPERIENCE
+        W O R K E X P E R I E N C E
+
+    Result:
+        workexperience
     """
-    words = line.strip().split()
-    if not words or len(words) > 6:
-        return False
 
-    key = _jd_header_key(line)
-    if not key:
-        return False
+    cleaned = _clean_header(line)
 
-    return any(key == hk or key.startswith(hk) for hk in header_keys)
+    return re.sub(
+        r"\s+",
+        "",
+        cleaned
+    )
 
-
-def _jd_section(text: str, start_headers) -> str:
+def _normalize_spaced_header(line: str) -> str:
     """
-    Ambil isi satu section JD, berhenti tepat di heading JD apa pun
-    berikutnya (Requirements/Preferred/Responsibilities/Other) —
-    bukan hanya heading yang dikenal CV parser.
-    """
-    if not text:
-        return ""
+    Convert stylized PDF headings such as:
 
-    lines = [ln.strip() for ln in text.splitlines() if ln.strip()]
+        W O R K E X P E R I E N C E
+
+    into:
+
+        work experience
+    """
+
+    cleaned = line.lower().strip()
+
+    # If every character is separated by spaces,
+    # collapse the individual letters.
+    tokens = cleaned.split()
+
+    if (
+        len(tokens) >= 3
+        and all(
+            len(token) == 1
+            for token in tokens
+        )
+    ):
+        return "".join(tokens)
+
+    return cleaned
+
+def _section(text: str, names):
+    """
+    Extract a CV section using flexible header matching.
+
+    Supports:
+    - English / Indonesian headers
+    - Different capitalization
+    - Extra whitespace
+    - PDF decorative spaced letters
+    """
+
+    lines = [
+        line.strip()
+        for line in text.splitlines()
+        if line.strip()
+    ]
+
+    # Normalize target headers.
+    target_headers = {
+        _header_key(name)
+        for name in names
+    }
+
+    # Normalize ALL known section headers.
+    known_section_headers = {
+        _header_key(header)
+        for header in SECTION_HEADERS
+    }
 
     start = None
+
+    # --------------------------------------------------------
+    # FIND START HEADER
+    # --------------------------------------------------------
+
     for i, line in enumerate(lines):
-        if _line_is_jd_header(line, {_jd_header_key(h) for h in start_headers}):
+
+        header_key = _header_key(line)
+
+        if header_key in target_headers:
             start = i + 1
             break
 
+    # Section not found.
     if start is None:
         return ""
 
     result = []
+
+    # --------------------------------------------------------
+    # COLLECT SECTION CONTENT
+    # --------------------------------------------------------
+
     for line in lines[start:]:
-        if _line_is_jd_header(line, _ALL_JD_HEADER_KEYS):
+
+        header_key = _header_key(line)
+
+        # Stop when another known section starts.
+        if header_key in known_section_headers:
             break
+
         result.append(line)
 
     return "\n".join(result).strip()
 
 
-# ============================================================
-# NOISE / TRAIT / ACTION-VERB WORD LISTS
-#
-# Dipakai untuk membuang pecahan kalimat (bukan nama skill) yang
-# lolos dari proses split — inilah perbaikan utama yang diminta:
-# "visionary", "learner", "available join asap", "ideas", "build",
-# "plan" dan sejenisnya tidak lagi masuk sebagai required_skills.
-# ============================================================
-
-_JD_ACTION_VERBS = {
-    "build", "building", "develop", "developing", "implement", "implementing",
-    "plan", "planning", "monitor", "monitoring", "support", "supporting",
-    "create", "creating", "ensure", "ensuring", "join", "joining",
-    "provide", "providing", "assist", "assisting", "meet", "meeting",
-    "understand", "understanding", "work", "working", "communicate",
-    "communicating", "collaborate", "collaborating", "coordinate",
-    "coordinating", "maintain", "maintaining", "prepare", "preparing",
-    "review", "reviewing", "manage", "managing", "deliver", "delivering",
-    "execute", "executing", "drive", "driving", "lead", "leading",
-    "oversee", "overseeing", "handle", "handling", "perform", "performing",
-    "contribute", "contributing", "conduct", "conducting", "produce",
-    "producing", "supervise", "supervising", "utilize", "utilizing",
-    "utilise", "utilising", "apply", "applying", "use", "using",
-    "follow", "following", "report", "reporting", "liaise", "liaising",
-    "attend", "attending",
-}
-
-_JD_TRAIT_WORDS = {
-    "creative", "visionary", "insightful", "resilient", "learner",
-    "eager", "motivated", "hardworking", "disciplined", "communicative",
-    "proactive", "enthusiastic", "passionate", "dedicated", "responsible",
-    "adaptable", "flexible", "positive", "dynamic", "energetic",
-    "independent", "reliable", "punctual", "honest", "friendly",
-    "organized", "organised",
-}
-
-_JD_NOISE_WORDS = {
-    # kata sambung / partikel
-    "the", "a", "an", "to", "of", "in", "on", "for", "with", "and",
-    "or", "is", "are", "be", "this", "that", "from", "as", "by", "at",
-    "into", "within", "across", "their", "our", "your", "you", "we",
-    "they", "it", "its", "who", "which",
-    # frasa umum yang bukan skill
-    "available", "asap", "join", "ideas", "idea", "things", "thing",
-    "field", "fields", "related", "other", "others", "etc",
-    "responsibilities", "responsibility", "duties", "task", "tasks",
-    "description", "overview", "role", "position", "candidate",
-    "candidates", "applicant", "applicants", "team", "teams",
-    "beginning", "end", "projects", "project", "creation", "models",
-    "model", "designs", "development", "conceptual", "software",
-    "programs", "program",
-}
-
-
-_JD_LINE_FILLER_PATTERNS = [
-    r"^(?:minimum|min\.?|at least)\s+\d+(?:\.\d+)?\s*\+?\s*(?:years?|yrs?|tahun)\s+(?:of\s+)?experience\s+(?:in|with)\s+",
-    r"^\d+(?:\.\d+)?\s*\+?\s*(?:years?|yrs?|tahun)\s+(?:of\s+)?experience\s+(?:in|with)\s+",
-    r"^(?:strong|good|excellent|solid)\s+.*?\s+skills?\s+(?:in|of|with)\s+",
-    r"^(?:strong|good|excellent|solid)\s+",
-    r"^knowledge\s+of\s+",
-    r"^experience\s+(?:in|with)\s+",
-    r"^proficien(?:t|cy)\s+(?:in|with)\s+",
-    r"^familiar(?:ity)?\s+with\s+",
-    r"^understanding\s+of\s+",
-    r"^ability\s+to\s+",
-    r"^skilled\s+in\s+",
-    r"^expertise\s+in\s+",
-    r"^well[\s\-]?versed\s+in\s+",
-    r"^menguasai\s+",
-    r"^memahami\s+",
-    r"^mampu\s+",
-    r"^berpengalaman\s+(?:dalam|di)\s+",
-    r"^menggunakan\s+",
-]
-
-
-def _split_requirement_line(line, soft_skill_sink=None):
+def extract_section(text: str, names) -> str:
     """
-    Ubah satu baris JD menjadi daftar frasa skill yang valid.
+    Public wrapper around the internal section-extraction logic.
 
-    Urutan keputusan per potongan:
-    1. Baris itu sendiri adalah heading JD (Responsibilities,
-       Requirements, dst) yang nyasar ke isi -> dibuang total.
-    2. Baris berisi pola pendidikan ("degree in ...", "jurusan ...")
-       -> dibuang total (sudah ditangani terpisah lewat
-       extract_education_field_phrases).
-    3. Tiap potongan hasil split:
-       a. Cocok skill terkurasi dikenal -> selalu dipertahankan.
-       b. Cocok soft-trait/soft-skill dikenal -> dialihkan ke
-          soft_skill_sink, TIDAK masuk required/preferred.
-       c. Selain itu: dibuang kalau kata pertamanya kata kerja
-          aksi generik, atau kalau semua kata dalam potongan itu
-          adalah kata noise/filler generik, atau kalau potongan
-          lebih dari 4 kata (kemungkinan besar pecahan kalimat,
-          bukan nama skill).
+    Exists so other modules (e.g. matcher.py, which parses Job
+    Descriptions using the same header-matching heuristics) don't
+    need to reach into a private/underscored function.
+    """
+    return _section(text, names)
+
+
+# ============================================================
+# NAME EXTRACTION
+# ============================================================
+
+def extract_name(
+    text: str,
+    fallback: str = "Unknown Candidate"
+):
+    """
+    Extract candidate name from the top/header area of a CV.
+
+    Most CV formats place the candidate name at the beginning.
+    Jobstreet-generated CVs may contain a platform label before
+    the actual candidate name.
     """
 
-    line = line.strip(" \t-•●▪◦*·»›\u2022:.")
-    if not line:
-        return []
+    lines = [
+        re.sub(r"\s+", " ", line.strip())
+        for line in text.splitlines()
+        if line.strip()
+    ]
 
-    if _line_is_jd_header(line, _ALL_JD_HEADER_KEYS):
-        return []
+    if not lines:
+        return fallback
 
-    low = line.lower()
+    ignored_labels = {
+        "dibuat dengan profil jobstreet",
+        "made with jobstreet profile",
+        "curriculum vitae",
+        "resume",
+        "cv",
+    }
 
-    if re.search(r"\bdegree\s+(in|of)\b", low) or re.search(r"\b(jurusan|gelar)\b", low):
-        return []
+    section_headers = {
+        _header_key(header)
+        for header in SECTION_HEADERS
+    }
 
-    for pattern in _JD_LINE_FILLER_PATTERNS:
-        low = re.sub(pattern, "", low, flags=re.IGNORECASE).strip()
+    # --------------------------------------------------------
+    # Only inspect the CV header.
+    # --------------------------------------------------------
 
-    low = re.sub(r"\bor\s+a\s+related\s+field\b.*", "", low)
+    header_lines = lines[:10]
 
-    parts = re.split(
-        r",|\bsuch as\b|\bincluding\b|\band\b|\bor\b|/|\(|\)|;",
-        low,
-    )
+    for line in header_lines:
 
-    phrases = []
+        clean = line.strip()
+        low = clean.lower()
 
-    for part in parts:
-        part = part.strip(" .\t:")
-        part = re.sub(r"\s+", " ", part)
-        if not part:
+        # Skip known platform/document labels.
+        if low in ignored_labels:
             continue
 
-        # Buang sufiks " skill(s)" generik agar "technical drawing
-        # skills" -> "technical drawing" (sudah dikenal sistem).
-        part = re.sub(r"\s+skills?$", "", part).strip()
-        if not part:
+        # Skip section headers.
+        if _header_key(clean) in section_headers:
             continue
 
-        words = part.split()
-        if not words:
+        # Skip contact information.
+        if "@" in clean:
             continue
 
-        canonical = normalize_skill(part)
-
-        # (a) Skill teknis terkurasi -> selalu dipertahankan.
-        if canonical in KNOWN_TECHNICAL_CANONICALS:
-            phrases.append(canonical)
-            continue
-
-        # (b) Soft-trait / soft-skill -> dialihkan, bukan dibuang
-        # diam-diam, tapi TIDAK ikut skor required/preferred.
-        if canonical in SOFT_SKILL_CANONICALS or (
-            len(words) == 1 and words[0] in _JD_TRAIT_WORDS
+        if re.search(
+            r"\+?\d[\d\s().-]{6,}",
+            clean
         ):
-            if soft_skill_sink is not None:
-                soft_skill_sink.add(
-                    canonical if canonical in SOFT_SKILL_CANONICALS else words[0]
-                )
             continue
 
-        # (c) Filter noise generik.
-        if len(words) > 4:
+        # Skip URLs.
+        if (
+            "http://" in low
+            or "https://" in low
+            or "www." in low
+        ):
             continue
 
-        if words[0] in _JD_ACTION_VERBS:
+        # Skip obvious location/contact lines.
+        if any(
+            keyword in low
+            for keyword in [
+                "jakarta, indonesia",
+                "bandung, indonesia",
+                "south jakarta",
+                "indonesia |",
+            ]
+        ):
             continue
 
-        if all(w in _JD_NOISE_WORDS or w in _JD_ACTION_VERBS for w in words):
+        # A candidate name is normally short.
+        words = clean.split()
+
+        if not (1 <= len(words) <= 4):
             continue
 
-        phrases.append(part)
+        # Must contain alphabetic characters.
+        if not re.search(
+            r"[A-Za-zÀ-ÿ]",
+            clean
+        ):
+            continue
 
-    return phrases
+        # Avoid obvious section/title words.
+        title_words = {
+            "architect",
+            "architectural",
+            "drafter",
+            "designer",
+            "engineer",
+            "developer",
+            "intern",
+            "freelancer",
+            "profile",
+            "summary",
+            "about",
+            "work",
+            "experience",
+            "education",
+            "skills",
+        }
+
+        if all(
+            word.lower() in title_words
+            for word in words
+        ):
+            continue
+
+        return clean
+
+    return fallback
+
+# ============================================================
+# SKILL ONTOLOGY
+#
+# NOTE: This dictionary is now treated as an optional "booster"
+# for known synonym clusters (e.g. typo/EN-ID variants of a
+# specific tool name). It is NOT the sole source of truth for
+# what counts as a "skill" anymore — that would only work for
+# CVs in the architecture/design domain it was written for.
+#
+# Generic, domain-agnostic skill discovery happens separately
+# via `extract_skill_tokens()`, which reads whatever the CV's
+# own Skills section actually lists, regardless of industry.
+# ============================================================
+
+SKILL_ALIASES = {
+
+    # Architecture software
+    "autocad": [
+        "autocad",
+        "auto cad",
+    ],
+
+    "sketchup": [
+        "sketchup",
+        "sketch up",
+    ],
+
+    "revit": [
+        "revit",
+        "revit architecture",
+    ],
+
+    "lumion": [
+        "lumion",
+    ],
+
+    "enscape": [
+        "enscape",
+    ],
+
+    "v-ray": [
+        "v-ray",
+        "vray",
+    ],
+
+    "d5 render": [
+        "d5 render",
+        "d5",
+    ],
+
+    "twinmotion": [
+        "twinmotion",
+    ],
+
+    "adobe photoshop": [
+        "photoshop",
+        "adobe photoshop",
+    ],
+
+    "adobe illustrator": [
+        "illustrator",
+        "adobe illustrator",
+    ],
+
+    # Architecture skills
+    "architectural design": [
+        "architectural design",
+        "architecture design",
+        "architectural design development",
+    ],
+
+    "interior design": [
+        "interior design",
+        "interior designer",
+        "interior architecture",
+        "interior architect",
+    ],
+
+    "technical drawing": [
+        "technical drawing",
+        "technical drawings",
+        "architectural drawing",
+        "architectural drawings",
+        "working drawing",
+        "working drawings",
+        "shop drawing",
+        "shop drawings",
+        "as-built drawing",
+        "as-built drawings",
+        "blueprints",
+    ],
+
+    "3d modeling": [
+        "3d modeling",
+        "3d modelling",
+        "3d model",
+        "3d visualization",
+        "3d visualisation",
+        "3d rendering",
+    ],
+
+    "visualization": [
+        "visualization",
+        "visualisation",
+        "rendering",
+        "3d visualization",
+        "3d visualisation",
+    ],
+
+    "construction management": [
+        "construction management",
+        "construction project",
+        "construction projects",
+    ],
+
+    "project management": [
+        "project management",
+        "project coordination",
+        "project coordination meetings",
+    ],
+
+    "site supervision": [
+        "site supervision",
+        "site supervisor",
+        "supervised construction",
+        "site inspection",
+    ],
+
+    "site survey": [
+        "site survey",
+        "site surveys",
+        "site measurement",
+        "site measurements",
+        "site analysis",
+    ],
+
+    "building codes": [
+        "building codes",
+        "building code",
+        "local building regulations",
+        "building regulations",
+        "regulatory standards",
+        "regulations",
+    ],
+
+    "space planning": [
+        "space planning",
+        "space utilization",
+        "space utilisation",
+    ],
+
+    "material specification": [
+        "material specification",
+        "material specifications",
+        "material sourcing",
+        "materials",
+    ],
+
+    # Generic professional skills
+    "communication": [
+        "communication",
+        "communicating",
+        "communicate effectively",
+    ],
+
+    "presentation": [
+        "presentation",
+        "client presentations",
+        "presentations",
+    ],
+
+    "teamwork": [
+        "teamwork",
+        "team",
+        "collaboration",
+        "collaborate",
+        "collaborating",
+    ],
+
+    "problem solving": [
+        "problem solving",
+        "problem-solving",
+        "solve design challenges",
+    ],
+
+    "critical thinking": [
+        "critical thinking",
+    ],
+
+    "attention to detail": [
+        "attention to detail",
+        "precision",
+        "accuracy",
+    ],
+
+    "time management": [
+        "time management",
+        "project timeline",
+        "project timelines",
+    ],
+
+    "creativity": [
+        "creative",
+        "creativity",
+        "creative skills",
+        "innovative designs",
+    ],
+
+    "visualization skills": [
+        "visualization skills",
+        "visualisation skills",
+        "visualization",
+    ],
+}
 
 
-def extract_requirement_phrases(section_text, max_items=30, soft_skill_sink=None):
+def _contains_alias(text: str, alias: str) -> bool:
     """
-    Ekstrak frasa requirement/skill yang sudah tersaring dari
-    sebuah blok teks JD (Requirements atau Preferred).
+    Safer matching for multi-word skills.
     """
+    pattern = r"(?<!\w)" + re.escape(alias.lower()) + r"(?!\w)"
+    return re.search(pattern, text.lower()) is not None
+
+
+def extract_skills(text: str):
+    """
+    Extract skills known via the curated SKILL_ALIASES booster.
+
+    This intentionally stays narrow/curated. For a domain-agnostic
+    view of "whatever the candidate says they can do", use
+    `extract_skill_tokens()` on the CV's own Skills section instead.
+    """
+    found = []
+
+    for canonical, aliases in SKILL_ALIASES.items():
+        for alias in aliases:
+            if _contains_alias(text, alias):
+                found.append(canonical)
+                break
+
+    return sorted(set(found))
+
+
+# ============================================================
+# GENERIC / DOMAIN-AGNOSTIC SKILL TOKEN EXTRACTION
+# ============================================================
+
+_SKILL_TOKEN_STOPWORDS = {
+    "dan", "and", "atau", "or", "dengan", "with", "serta",
+    "including", "termasuk", "etc", "dll", "lainnya", "other",
+    "others", "baik", "seperti", "such", "as", "for", "untuk",
+    "yang", "di", "dalam", "in", "of", "the", "a", "an",
+}
+
+
+def extract_skill_tokens(section_text: str):
+    """
+    Extract free-form skill tokens directly from a CV's Skills
+    section (or similar), independent of any predefined skill
+    dictionary. This is what makes matching work for CVs from
+    ANY industry, not just architecture/design.
+
+    A CV that lists:
+        "Recruitment, HRIS, Payroll Processing, Labor Law,
+         Employee Relations, Ms. Office"
+
+    will yield those exact tokens (lowercased, cleaned) instead
+    of returning nothing just because they aren't in a hardcoded
+    architecture-focused dictionary.
+    """
+
     if not section_text or not section_text.strip():
         return []
 
-    phrases = []
+    tokens = []
+
     for line in section_text.splitlines():
-        phrases.extend(_split_requirement_line(line, soft_skill_sink=soft_skill_sink))
 
-    normalized = [normalize_skill(p) for p in phrases if p]
-    deduped = list(dict.fromkeys(normalized))
+        line = line.strip()
+        if not line:
+            continue
 
-    return deduped[:max_items]
+        # Strip common bullet / list markers.
+        line = re.sub(r"^[\-•●▪◦*·»›\u2022]+\s*", "", line)
+
+        # A skills section is usually delimited by commas,
+        # bullets, pipes, semicolons, or slashes rather than
+        # being full prose sentences.
+        parts = re.split(r"[,;|/•●▪◦]", line)
+
+        for part in parts:
+
+            part = part.strip(" .\t")
+            part = re.sub(r"\s+", " ", part)
+
+            if not part:
+                continue
+
+            words = part.split()
+
+            # Keep only short, list-like phrases (real skill
+            # labels), not full sentences that slipped in.
+            if not (1 <= len(words) <= 5):
+                continue
+
+            low = part.lower()
+
+            if low in _SKILL_TOKEN_STOPWORDS:
+                continue
+
+            if not re.search(r"[A-Za-zÀ-ÿ]", part):
+                continue
+
+            tokens.append(low)
+
+    return sorted(set(tokens))
 
 
 # ============================================================
-# JOB DESCRIPTION PARSER
+# EDUCATION EXTRACTION
 # ============================================================
 
-def parse_job_description(text):
+DEGREE_ALIASES = {
+    "bachelor": [
+        "bachelor",
+        "bachelors",
+        "bachelor's",
+        "sarjana",
+        "s1",
+        "b.arch",
+    ],
+    "master": [
+        "master",
+        "master's",
+        "magister",
+        "s2",
+    ],
+    "diploma": [
+        "diploma",
+        "d3",
+        "d4",
+    ],
+    "vocational": [
+        "vocational",
+        "smk",
+        "smkn",
+    ],
+}
+
+# ============================================================
+# EDUCATION FIELDS — booster dictionary
+#
+# Same idea as SKILL_ALIASES: kept as a fallback so common
+# fields still resolve to a stable canonical name, but it is
+# no longer the only way education fields are detected. See
+# `extract_education_field_phrases()` for the dynamic path,
+# which reads whatever field the CV/JD actually names.
+# ============================================================
+
+EDUCATION_FIELDS = {
+    "architecture": [
+        "architecture",
+        "architectural engineering",
+        "arsitektur",
+    ],
+
+    "interior design": [
+        "interior design",
+        "interior designer",
+        "interior architecture",
+        "interior architect",
+    ],
+
+    "civil engineering": [
+        "civil engineering",
+        "sipil",
+    ],
+
+    "design": [
+        "design",
+        "desain",
+    ],
+
+    "information technology": [
+        "information technology",
+        "informatika",
+        "computer science",
+        "ilmu komputer",
+        "teknik informatika",
+        "sistem informasi",
+        "information systems",
+    ],
+
+    "human resources": [
+        "human resources",
+        "human resource management",
+        "manajemen sumber daya manusia",
+        "msdm",
+        "psikologi",
+        "psychology",
+    ],
+
+    "business management": [
+        "business administration",
+        "management",
+        "manajemen",
+        "administrasi bisnis",
+        "marketing",
+        "pemasaran",
+    ],
+
+    "accounting finance": [
+        "accounting",
+        "akuntansi",
+        "finance",
+        "keuangan",
+        "ekonomi",
+        "economics",
+    ],
+
+    "communication": [
+        "communication",
+        "communication science",
+        "ilmu komunikasi",
+        "public relations",
+    ],
+
+    "law": [
+        "law",
+        "hukum",
+        "ilmu hukum",
+    ],
+}
+
+
+# Regex patterns that capture the *literal* field name mentioned
+# in text, e.g. "Bachelor of Computer Science", "S1 Teknik
+# Informatika", "Jurusan Manajemen", "Degree in Marketing".
+_EDUCATION_FIELD_PATTERNS = [
+    r"(?:bachelor'?s?|master'?s?|diploma|sarjana|magister|s1|s2|d3|d4)"
+    r"\s+(?:degree\s+)?(?:in|of|dalam|di|jurusan)\s+"
+    r"([A-Za-zÀ-ÿ][A-Za-zÀ-ÿ\s/&\-]{2,60})",
+
+    r"(?:jurusan|program studi|prodi)\s+"
+    r"([A-Za-zÀ-ÿ][A-Za-zÀ-ÿ\s/&\-]{2,60})",
+
+    r"degree\s+in\s+"
+    r"([A-Za-zÀ-ÿ][A-Za-zÀ-ÿ\s/&\-]{2,60})",
+]
+
+_EDUCATION_FIELD_STOPWORDS = {
+    "a", "an", "the", "related", "field", "fields", "etc",
+    "other", "others", "any", "relevant", "similar",
+}
+
+
+def extract_education_field_phrases(text: str):
     """
-    Parse Job Description menjadi:
+    Pull the literal field-of-study phrase(s) mentioned in a
+    piece of text (a JD requirement line OR a CV education
+    entry), e.g.:
 
-    - required_skills / preferred_skills: dinamis, dari section
-      Requirements/Preferred JD sendiri, dengan boundary yang
-      benar (berhenti di Responsibilities/About/dll, bukan
-      nyeruduk sampai akhir dokumen).
-    - soft_skills: gabungan deteksi lama + trait yang terdeteksi
-      dinamis saat parsing Requirements (mis. "creative",
-      "communication") supaya tidak hilang informasinya, tapi
-      tidak ikut menghitung skor teknis.
-    - education, experience, domain knowledge, availability.
+        "Degree in architecture, interior design, or a
+         related field"
+        -> ["architecture", "interior design"]
+
+        "S1 Teknik Informatika"
+        -> ["teknik informatika"]
+
+    This works for ANY field name, not just the ones hardcoded
+    in EDUCATION_FIELDS.
+    """
+
+    if not text:
+        return []
+
+    phrases = []
+
+    for pattern in _EDUCATION_FIELD_PATTERNS:
+
+        for match in re.finditer(pattern, text, flags=re.IGNORECASE):
+
+            chunk = match.group(1)
+
+            # Drop trailing "...or a related field" style noise.
+            chunk = re.sub(
+                r"\bor\s+(?:a\s+)?related\s+field(s)?\b.*",
+                "",
+                chunk,
+                flags=re.IGNORECASE,
+            )
+            chunk = re.sub(
+                r"\brelated\s+field(s)?\b",
+                "",
+                chunk,
+                flags=re.IGNORECASE,
+            )
+
+            parts = re.split(r",|/|\band\b|\bor\b|&", chunk, flags=re.IGNORECASE)
+
+            for part in parts:
+
+                part = part.strip(" .\t")
+                part = re.sub(r"\s+", " ", part)
+
+                if not part:
+                    continue
+
+                words = part.split()
+
+                if not (1 <= len(words) <= 5):
+                    continue
+
+                if part.lower() in _EDUCATION_FIELD_STOPWORDS:
+                    continue
+
+                phrases.append(part.lower())
+
+    return list(dict.fromkeys(phrases))
+
+
+def extract_education(text: str):
+    """
+    Extract highest / most relevant education level
+    and education fields from the education section.
     """
 
     low = normalize_text(text)
-    detected_skills = set(extract_skills(text))
 
     # --------------------------------------------------------
-    # Required / Preferred — DYNAMIC, dengan boundary JD sendiri
+    # DEGREE
     # --------------------------------------------------------
 
-    required_section = _jd_section(text, JD_REQUIRED_HEADERS)
-    preferred_section = _jd_section(text, JD_PREFERRED_HEADERS)
+    degree_priority = [
+        ("master", [
+            "master",
+            "master's",
+            "magister",
+            "s2",
+        ]),
 
-    if required_section:
-        required_source = required_section
-    else:
-        # JD tanpa heading "Requirements" eksplisit — pakai seluruh
-        # teks, tapi buang dulu blok Responsibilities/About/dll
-        # kalau berhasil terdeteksi, supaya kalimat tugas tidak
-        # ikut dianggap requirement.
-        required_source = text
-        for header_group in (JD_RESPONSIBILITY_HEADERS, JD_OTHER_HEADERS):
-            block = _jd_section(text, header_group)
-            if block and block in required_source:
-                required_source = required_source.replace(block, "")
+        ("bachelor", [
+            "bachelor",
+            "bachelors",
+            "bachelor's",
+            "sarjana",
+            "s1",
+            "b.arch",
+            "bachelor of architecture",
+        ]),
 
-    dynamic_soft_skills = set()
+        ("diploma", [
+            "diploma",
+            "d3",
+            "d4",
+        ]),
 
-    required_skills = extract_requirement_phrases(
-        required_source, soft_skill_sink=dynamic_soft_skills
-    )
-    supporting_skills = extract_requirement_phrases(
-        preferred_section, soft_skill_sink=dynamic_soft_skills
-    )
-
-    # Safety net: kalau ekstraksi dinamis kosong total (format JD
-    # sangat tidak biasa), jatuh balik ke kamus lama.
-    if not required_skills:
-        required_skills = sorted(detected_skills.intersection(ARCHITECTURE_HARD_SKILLS))
-        if _contains(low, "technical drawing") and "technical drawing" not in required_skills:
-            required_skills.append("technical drawing")
-
-    if not supporting_skills:
-        supporting_skills = sorted(detected_skills.intersection(ARCHITECTURE_SUPPORTING_SKILLS))
-
-    required_skills = sorted(set(required_skills))
-    supporting_skills = sorted(set(supporting_skills))
-
-    # Frasa yang sama tidak boleh double — required menang.
-    supporting_skills = [s for s in supporting_skills if s not in required_skills]
-
-    # --------------------------------------------------------
-    # Education — dinamis + fallback kamus lama
-    # --------------------------------------------------------
-
-    education_fields_raw = extract_education_field_phrases(text)
-
-    education_fields = []
-    for canonical, aliases in EDUCATION_KEYWORDS.items():
-        if any(_contains(low, alias) for alias in aliases):
-            education_fields.append(canonical)
-
-    # --------------------------------------------------------
-    # Experience
-    # --------------------------------------------------------
-
-    experience_values = []
-    patterns = [
-        r"(?:minimum|min\.?|at least)\s*(\d+(?:\.\d+)?)\s*(?:years?|yrs?|tahun)",
-        r"(\d+(?:\.\d+)?)\s*\+?\s*(?:years?|yrs?|tahun)\s+(?:of\s+)?experience",
+        ("vocational", [
+            "vocational",
+            "smk",
+            "smkn",
+        ]),
     ]
-    for pattern in patterns:
-        for value in re.findall(pattern, low, flags=re.IGNORECASE):
+
+    degree = None
+
+    for canonical, aliases in degree_priority:
+
+        if any(
+            _contains_alias(low, alias)
+            for alias in aliases
+        ):
+            degree = canonical
+            break
+
+    # --------------------------------------------------------
+    # UNIVERSITY DETECTION
+    # --------------------------------------------------------
+
+    university_indicators = [
+        "university",
+        "universitas",
+        "institute",
+        "institut",
+        "college",
+    ]
+
+    has_university = any(
+        _contains_alias(low, indicator)
+        for indicator in university_indicators
+    )
+
+    # If the candidate has university education but
+    # the CV does not explicitly write "Bachelor",
+    # treat it as bachelor-level education for this POC.
+    if degree == "vocational" and has_university:
+        degree = "bachelor"
+
+    # --------------------------------------------------------
+    # EDUCATION FIELD (booster dictionary — canonical buckets)
+    # --------------------------------------------------------
+
+    fields = []
+
+    for canonical, aliases in EDUCATION_FIELDS.items():
+
+        if any(
+            _contains_alias(low, alias)
+            for alias in aliases
+        ):
+            fields.append(canonical)
+
+    # --------------------------------------------------------
+    # EDUCATION FIELD (dynamic — literal phrase from the text)
+    #
+    # This is what makes a "Manajemen" or "Psikologi" or
+    # "Akuntansi" graduate resolve to *something* even if that
+    # exact field isn't in the booster dictionary above.
+    # --------------------------------------------------------
+
+    fields_raw = extract_education_field_phrases(text)
+
+    return {
+        "degree": degree,
+        "fields": sorted(set(fields)),
+        "fields_raw": fields_raw,
+    }
+
+
+# ============================================================
+# EXPERIENCE EXTRACTION
+# ============================================================
+
+MONTHS = {
+    # English
+    "jan": 1,
+    "january": 1,
+    "feb": 2,
+    "february": 2,
+    "mar": 3,
+    "march": 3,
+    "apr": 4,
+    "april": 4,
+    "may": 5,
+    "jun": 6,
+    "june": 6,
+    "jul": 7,
+    "july": 7,
+    "aug": 8,
+    "august": 8,
+    "sep": 9,
+    "sept": 9,
+    "september": 9,
+    "oct": 10,
+    "october": 10,
+    "nov": 11,
+    "november": 11,
+    "dec": 12,
+    "december": 12,
+
+    # Indonesian
+    "januari": 1,
+    "februari": 2,
+    "maret": 3,
+    "mei": 5,
+    "juni": 6,
+    "juli": 7,
+    "agustus": 8,
+    "oktober": 10,
+    "desember": 12,
+}
+
+PRESENT_WORDS = {
+    "present",
+    "currently",
+    "current",
+    "now",
+    "sekarang",
+    "saat ini",
+    "hingga sekarang",
+}
+
+
+def _parse_month_year(month, year):
+    month = month.lower().strip()
+
+    if month not in MONTHS:
+        return None
+
+    return date(
+        int(year),
+        MONTHS[month],
+        1
+    )
+
+
+def _parse_date_token(token):
+    """
+    Parse common CV date tokens.
+
+    Supported:
+        2024
+        Jan 2024
+        January 2024
+        2024 Jan
+        06/2024
+        06-2024
+        2024/06
+        2024-06
+    """
+
+    token = token.strip().lower()
+    token = re.sub(r"\s+", " ", token)
+
+    # YYYY
+    if re.fullmatch(r"\d{4}", token):
+        return date(int(token), 1, 1)
+
+    # MM/YYYY or MM-YYYY
+    match = re.fullmatch(r"(\d{1,2})[/-](\d{4})", token)
+    if match:
+        month = int(match.group(1))
+        year = int(match.group(2))
+        if 1 <= month <= 12:
+            return date(year, month, 1)
+
+    # YYYY/MM or YYYY-MM
+    match = re.fullmatch(r"(\d{4})[/-](\d{1,2})", token)
+    if match:
+        year = int(match.group(1))
+        month = int(match.group(2))
+        if 1 <= month <= 12:
+            return date(year, month, 1)
+
+    # Month YYYY
+    match = re.fullmatch(r"([a-zA-Z]+)\s+(\d{4})", token)
+    if match:
+        return _parse_month_year(match.group(1), match.group(2))
+
+    # YYYY Month
+    match = re.fullmatch(r"(\d{4})\s+([a-zA-Z]+)", token)
+    if match:
+        return _parse_month_year(match.group(2), match.group(1))
+
+    return None
+
+
+def _parse_end_date(token):
+    token = token.strip().lower()
+
+    if token in PRESENT_WORDS:
+        return date.today().replace(day=1)
+
+    return _parse_date_token(token)
+
+
+def _months_between(start, end):
+    return (
+        (end.year - start.year) * 12
+        + (end.month - start.month)
+        + 1
+    )
+
+
+def _extract_date_ranges(text):
+    """
+    Extract employment date ranges from CV text.
+
+    Supported examples:
+        2023 - Present
+        2021 - 2024
+        Jan 2022 - Present
+        January 2022 - December 2024
+        Jun 2018 - Jul 2019
+        2018 - 2023
+        06/2022 - Present
+        06/2022 - 12/2024
+        2022 - Sekarang
+        2022 - Saat ini
+        2022 - Hingga sekarang
+
+    Unsupported/malformed patterns are ignored instead of
+    crashing the CV parser.
+    """
+
+    if not text:
+        return []
+
+    text = str(text)
+    ranges = []
+    month_names = list(MONTHS.keys())
+
+    # 1. Month Year - Month Year
+    pattern_month_month = (
+        r"\b([A-Za-z]+)\s+(\d{4})"
+        r"\s*[-–—]\s*"
+        r"([A-Za-z]+)\s+(\d{4})\b"
+    )
+
+    for match in re.finditer(pattern_month_month, text, flags=re.IGNORECASE):
+        start = _parse_date_token(f"{match.group(1)} {match.group(2)}")
+        end = _parse_date_token(f"{match.group(3)} {match.group(4)}")
+
+        if start is not None and end is not None and end >= start:
+            ranges.append((start, end))
+
+    # 2. Month Year - Present
+    pattern_month_present = (
+        r"\b([A-Za-z]+)\s+(\d{4})"
+        r"\s*[-–—]\s*"
+        r"(Present|Currently|Current|Now|Sekarang|Saat ini|Hingga sekarang)\b"
+    )
+
+    for match in re.finditer(pattern_month_present, text, flags=re.IGNORECASE):
+        start = _parse_date_token(f"{match.group(1)} {match.group(2)}")
+        end = _parse_end_date(match.group(3))
+
+        if start is not None and end is not None and end >= start:
+            ranges.append((start, end))
+
+    # 3. Numeric Month/Year - Numeric Month/Year
+    pattern_numeric_month_month = (
+        r"\b(\d{1,2}[/-]\d{4})"
+        r"\s*[-–—]\s*"
+        r"(\d{1,2}[/-]\d{4})\b"
+    )
+
+    for match in re.finditer(
+        pattern_numeric_month_month, text, flags=re.IGNORECASE
+    ):
+        start = _parse_date_token(match.group(1))
+        end = _parse_date_token(match.group(2))
+
+        if start is not None and end is not None and end >= start:
+            ranges.append((start, end))
+
+    # 4. Numeric Month/Year - Present
+    pattern_numeric_month_present = (
+        r"\b(\d{1,2}[/-]\d{4})"
+        r"\s*[-–—]\s*"
+        r"(Present|Currently|Current|Now|Sekarang|Saat ini|Hingga sekarang)\b"
+    )
+
+    for match in re.finditer(
+        pattern_numeric_month_present, text, flags=re.IGNORECASE
+    ):
+        start = _parse_date_token(match.group(1))
+        end = _parse_end_date(match.group(2))
+
+        if start is not None and end is not None and end >= start:
+            ranges.append((start, end))
+
+    # 5. Year - Present
+    pattern_year_present = (
+        r"(?<![A-Za-z])"
+        r"(\d{4})"
+        r"\s*[-–—]\s*"
+        r"(Present|Currently|Current|Now|Sekarang|Saat ini|Hingga sekarang)\b"
+    )
+
+    for match in re.finditer(
+        pattern_year_present, text, flags=re.IGNORECASE
+    ):
+        before = text[max(0, match.start() - 30):match.start()].lower()
+
+        # Hindari mengambil bagian "2021 - Present"
+        # dari "November 2021 - Present".
+        if any(
+            re.search(rf"\b{re.escape(month)}\s+$", before)
+            for month in month_names
+        ):
+            continue
+
+        start = _parse_date_token(match.group(1))
+        end = _parse_end_date(match.group(2))
+
+        if start is not None and end is not None and end >= start:
+            ranges.append((start, end))
+
+    # 6. Year - Year
+    pattern_year_year = (
+        r"\b(\d{4})"
+        r"\s*[-–—]\s*"
+        r"(\d{4})\b"
+    )
+
+    for match in re.finditer(pattern_year_year, text, flags=re.IGNORECASE):
+        before = text[max(0, match.start() - 30):match.start()].lower()
+
+        # Hindari double-counting "2021 - 2024"
+        # dari "January 2021 - December 2024".
+        if any(
+            re.search(rf"\b{re.escape(month)}\s+$", before)
+            for month in month_names
+        ):
+            continue
+
+        start = _parse_date_token(match.group(1))
+        end = _parse_date_token(match.group(2))
+
+        if start is not None and end is not None and end >= start:
+            ranges.append((start, end))
+
+    # 7. Remove duplicates
+    unique_ranges = []
+    for item in ranges:
+        if item not in unique_ranges:
+            unique_ranges.append(item)
+
+    return unique_ranges
+
+def _merge_date_ranges(ranges):
+    """
+    Merge overlapping employment periods so that
+    overlapping jobs are not double-counted.
+    """
+
+    if not ranges:
+        return []
+
+    ranges = sorted(
+        ranges,
+        key=lambda item: item[0]
+    )
+
+    merged = [
+        list(ranges[0])
+    ]
+
+    for start, end in ranges[1:]:
+
+        previous_start, previous_end = merged[-1]
+
+        if start <= previous_end:
+
+            if end > previous_end:
+                merged[-1][1] = end
+
+        else:
+            merged.append(
+                [start, end]
+            )
+
+    return [
+        (start, end)
+        for start, end in merged
+    ]
+
+
+# Words that, when found shortly before/after a "<number> tahun"
+# phrase, mean the number is almost certainly NOT years of work
+# experience (age, contract length, certificate validity, etc.).
+# This fixes a bug where e.g. "Usia: 24 tahun" was being read as
+# 24 years of professional experience.
+_TAHUN_EXCLUDE_CONTEXT = [
+    "usia", "umur", "age",
+    "kontrak", "contract",
+    "berlaku", "valid", "validity",
+    "garansi", "warranty",
+    "sertifikat", "certificate", "license", "lisensi",
+]
+
+
+def extract_experience_years(text):
+    """
+    Extract total professional experience.
+
+    Priority:
+    1. Explicit statements such as:
+       "5 years of experience"
+    2. Employment date ranges:
+       "2021 - Present"
+       "Jan 2022 - Dec 2024"
+
+    The whole CV is used instead of relying only on the
+    EXPERIENCE section because CV layouts vary heavily.
+    """
+
+    if not text:
+        return 0.0
+
+    # --------------------------------------------------------
+    # 1. Explicit experience statements
+    # --------------------------------------------------------
+
+    explicit_values = []
+
+    explicit_patterns = [
+        r"(\d+(?:\.\d+)?)\s*\+?\s*"
+        r"(?:years?|yrs?)\s+(?:of\s+)?experience",
+
+        r"(?:experience|pengalaman)"
+        r"\s*[:\-]?\s*"
+        r"(\d+(?:\.\d+)?)\s*"
+        r"(?:years?|yrs?|tahun)",
+
+        r"with\s+(\d+(?:\.\d+)?)\s*"
+        r"(?:years?|yrs?)",
+    ]
+
+    for pattern in explicit_patterns:
+
+        matches = re.findall(
+            pattern,
+            text,
+            flags=re.IGNORECASE
+        )
+
+        for value in matches:
+
             try:
-                experience_values.append(float(value))
+                explicit_values.append(
+                    float(value)
+                )
             except ValueError:
                 pass
 
-    min_experience = max(experience_values) if experience_values else 0.0
-
     # --------------------------------------------------------
-    # Soft Skills — deteksi lama + hasil dinamis dari Requirements
-    # --------------------------------------------------------
-
-    soft_skills = []
-    soft_aliases = {
-        "creativity": ["creative", "creativity", "visionary"],
-        "problem solving": ["problem solver", "problem-solving", "problem solving"],
-        "communication": ["communication", "communicating", "communicate effectively"],
-        "presentation": ["presentation", "presentations"],
-        "teamwork": ["teamwork", "collaboration", "collaborate"],
-        "interpersonal": ["interpersonal"],
-        "learner": ["learner", "eager to learn"],
-    }
-    for canonical, aliases in soft_aliases.items():
-        if any(_contains(low, alias) for alias in aliases):
-            soft_skills.append(canonical)
-
-    soft_skills = sorted(set(soft_skills) | dynamic_soft_skills)
-
-    # --------------------------------------------------------
-    # Domain Knowledge
+    # 1b. "<number> tahun (pengalaman)" — handled separately
+    # with context-aware exclusion so age / contract length /
+    # certificate validity etc. don't get misread as work
+    # experience.
     # --------------------------------------------------------
 
-    domain_knowledge = []
-    domain_aliases = {
-        "building codes": ["building codes", "building code"],
-        "regulatory standards": ["regulatory standards", "building regulations", "local building regulations"],
-        "design and build": ["design and build"],
-        "visualization": ["visualization", "visualisation"],
-        "space planning": ["space planning"],
-        "material specification": ["material specification", "material specifications"],
-    }
-    for canonical, aliases in domain_aliases.items():
-        if any(_contains(low, alias) for alias in aliases):
-            domain_knowledge.append(canonical)
+    tahun_pattern = r"(\d+(?:\.\d+)?)\s*tahun\b"
 
-    # --------------------------------------------------------
-    # Availability
-    # --------------------------------------------------------
+    for match in re.finditer(tahun_pattern, text, flags=re.IGNORECASE):
 
-    availability = None
-    if _contains(low, "asap"):
-        availability = "ASAP"
-    elif _contains(low, "immediately"):
-        availability = "Immediately"
+        window_before = text[max(0, match.start() - 25):match.start()].lower()
+        window_after = text[match.end():match.end() + 25].lower()
 
-    return {
-        "required_skills": required_skills,
-        "preferred_skills": supporting_skills,
-        "soft_skills": soft_skills,
-        "domain_knowledge": sorted(set(domain_knowledge)),
-        "min_experience_years": min_experience,
-        "education_fields": sorted(set(education_fields)),
-        "education_fields_raw": education_fields_raw,
-        "availability": availability,
-        "raw_text": text,
-    }
+        if any(word in window_before for word in _TAHUN_EXCLUDE_CONTEXT):
+            continue
+        if any(word in window_after for word in _TAHUN_EXCLUDE_CONTEXT):
+            continue
 
-
-# ============================================================
-# SEMANTIC MATCHER
-# ============================================================
-
-class SemanticMatcher:
-    def __init__(self, model_name=DEFAULT_MODEL):
-        self.model = SentenceTransformer(model_name)
-
-    def similarity(self, candidate_text, job_text):
-        embeddings = self.model.encode(
-            [candidate_text, job_text], normalize_embeddings=True
+        # Only trust a bare "<number> tahun" as work experience
+        # if "pengalaman"/"kerja" is nearby — otherwise it's too
+        # ambiguous (could be age, duration of a course, etc.).
+        has_experience_context = (
+            "pengalaman" in window_before
+            or "pengalaman" in window_after
+            or "kerja" in window_before
+            or "kerja" in window_after
         )
-        similarity = cosine_similarity([embeddings[0]], [embeddings[1]])[0][0]
-        return max(0.0, min(float(similarity), 1.0))
 
+        if not has_experience_context:
+            continue
 
-# ============================================================
-# EDUCATION MATCHING
-# ============================================================
+        try:
+            explicit_values.append(float(match.group(1)))
+        except ValueError:
+            pass
 
-def education_match(profile, job):
-    candidate_fields = set(profile.get("education", {}).get("fields", []))
-    candidate_fields_raw = set(
-        f.lower() for f in profile.get("education", {}).get("fields_raw", [])
+    # --------------------------------------------------------
+    # 2. Date-based experience
+    # --------------------------------------------------------
+
+    ranges = _extract_date_ranges(
+        text
     )
-    required_fields = set(job.get("education_fields", []))
-    required_fields_raw = set(f.lower() for f in job.get("education_fields_raw", []))
 
-    if not required_fields and not required_fields_raw:
-        return 1.0
-    if not candidate_fields and not candidate_fields_raw:
+    if ranges:
+
+        merged = _merge_date_ranges(
+            ranges
+        )
+
+        total_months = sum(
+            _months_between(
+                start,
+                end
+            )
+            for start, end in merged
+        )
+
+        date_based_years = (
+            total_months / 12.0
+        )
+
+    else:
+        date_based_years = 0.0
+
+    # --------------------------------------------------------
+    # 3. Combine evidence
+    # --------------------------------------------------------
+
+    candidates = [
+        date_based_years,
+        *explicit_values
+    ]
+
+    if not candidates:
         return 0.0
 
-    if candidate_fields & required_fields:
-        return 1.0
+    result = max(candidates)
 
-    for req in required_fields_raw:
-        for cand in candidate_fields_raw:
-            if req in cand or cand in req:
-                return 1.0
-            if _fuzzy_ratio(req, cand) >= 0.8:
-                return 1.0
-
-    architecture_group = {"architecture", "interior design", "design"}
-    if candidate_fields & architecture_group and required_fields & architecture_group:
-        return 1.0
-
-    if "engineering" in candidate_fields and "engineering" in required_fields:
-        return 1.0
-
-    return 0.0
-
+    return round(
+        result,
+        1
+    )
 
 # ============================================================
-# EXACT SKILL MATCHING (kept for compatibility)
+# EXPERIENCE TEXT
 # ============================================================
 
-def skill_match(candidate_skills, required_skills):
-    required = set(required_skills)
-    candidate = set(candidate_skills)
-    if not required:
-        return {"score": None, "matched": [], "missing": []}
-    matched = sorted(required.intersection(candidate))
-    missing = sorted(required.difference(candidate))
-    return {"score": len(matched) / len(required), "matched": matched, "missing": missing}
+def extract_experience_section(text: str):
+    """
+    Extract professional/work experience section.
 
+    Supports both English and Indonesian CV section names.
+    """
 
-def experience_match(candidate_years, required_years):
-    if required_years <= 0:
-        return 1.0
-    return min(candidate_years / required_years, 1.0)
+    return _section(
+        text,
+        [
+            "experience",
+            "experiences",
+            "work experience",
+            "work experiences",
+            "professional experience",
+            "professional experiences",
+            "employment history",
+            "career history",
+            "work history",
 
-
-def supporting_match(candidate_skills, required_items):
-    required = set(required_items)
-    candidate = set(candidate_skills)
-    if not required:
-        return {"score": None, "matched": [], "missing": []}
-    matched = sorted(required.intersection(candidate))
-    missing = sorted(required.difference(candidate))
-    return {"score": len(matched) / len(required), "matched": matched, "missing": missing}
-
-
-# ============================================================
-# SCORE CANDIDATE
-# ============================================================
-
-def score_candidate(profile, job, semantic_score, semantic_matcher=None):
-    candidate_text = profile.get("raw_text", "")
-
-    candidate_skill_texts = list(dict.fromkeys(
-        profile.get("skills", [])
-        + [
-            line.strip()
-            for line in str(profile.get("skills_text", "")).splitlines()
-            if line.strip()
+            "pengalaman",
+            "pengalaman kerja",
+            "riwayat kerja",
+            "riwayat karier",
         ]
-    ))
-
-    required_result = contextual_skill_match(
-        candidate_text,
-        job.get("required_skills", []),
-        profile.get("skills", []),
-        semantic_matcher=semantic_matcher,
-        candidate_skill_texts=candidate_skill_texts,
     )
-    required_score = required_result["score"] if required_result["score"] is not None else 0.0
 
-    preferred_result = contextual_skill_match(
-        candidate_text,
-        job.get("preferred_skills", []),
-        profile.get("skills", []),
-        semantic_matcher=semantic_matcher,
-        candidate_skill_texts=candidate_skill_texts,
+
+# ============================================================
+# FULL CV PARSER
+# ============================================================
+
+def parse_cv(text: str, source=""):
+    """
+    Convert raw CV text into a structured candidate profile.
+    """
+
+    # --------------------------------------------------------
+    # EXPERIENCE
+    # --------------------------------------------------------
+
+    experience_text = extract_experience_section(
+        text
     )
-    preferred_score = preferred_result["score"]
 
-    required_evidence = extract_skill_evidence(candidate_text, required_result["matched"])
-    preferred_evidence = extract_skill_evidence(candidate_text, preferred_result["matched"])
-
-    exp_score = experience_match(
-        profile.get("experience_years", 0.0), job.get("min_experience_years", 0.0)
+    # Hanya gunakan experience section untuk menghitung
+    # pengalaman kerja.
+    experience_years = extract_experience_years(
+        experience_text
     )
-    edu_score = education_match(profile, job)
 
-    total = (
-        required_score * 0.35
-        + exp_score * 0.25
-        + edu_score * 0.15
-        + semantic_score * 0.15
+    # --------------------------------------------------------
+    # SKILLS
+    # --------------------------------------------------------
+
+    skills_text = _section(
+        text,
+        [
+            "skills",
+            "skill",
+            "technical skills",
+            "technical skill",
+            "soft skills",
+            "soft skill",
+            "hard skills",
+            "hard skill",
+            "professional skills",
+            "core skills",
+
+            "keahlian",
+            "keahlian teknis",
+            "kemampuan",
+            "keterampilan",
+        ]
     )
-    if preferred_score is not None:
-        total += preferred_score * 0.10
 
-    overall_score = total * 100
-
-    missing_required = required_result["missing"]
-    mandatory_experience_met = profile.get("experience_years", 0.0) >= job.get("min_experience_years", 0.0)
-    mandatory_education_met = edu_score >= 1.0
-    mandatory_skills_met = len(missing_required) == 0
-    mandatory_requirements_met = mandatory_skills_met and mandatory_experience_met and mandatory_education_met
-
-    if mandatory_requirements_met and overall_score >= 75:
-        recommendation = "SHORTLIST"
-    elif overall_score >= 60:
-        recommendation = "REVIEW"
-    else:
-        recommendation = "REJECT"
-
-    reasons = []
-    reasons.append(
-        "Education is aligned with the required field."
-        if mandatory_education_met else
-        "Education does not clearly match the required field."
+    # Curated booster (known synonym clusters).
+    skills = extract_skills(
+        text
     )
-    reasons.append(
-        f"Relevant experience meets the {job.get('min_experience_years', 0):g}-year requirement."
-        if mandatory_experience_met else
-        f"Experience is below the {job.get('min_experience_years', 0):g}-year requirement."
-    )
-    if required_result["matched"]:
-        reasons.append("Matches mandatory technical requirements: " + ", ".join(required_result["matched"]) + ".")
-    if required_result["missing"]:
-        reasons.append("Missing mandatory technical requirements: " + ", ".join(required_result["missing"]) + ".")
 
-    breakdown = {
-        "required_skill_match": round(required_score * 100, 2),
-        "experience_match": round(exp_score * 100, 2),
-        "education_match": round(edu_score * 100, 2),
-        "semantic_similarity": round(semantic_score * 100, 2),
-        "preferred_skill_match": round(preferred_score * 100, 2) if preferred_score is not None else None,
-    }
+    # Domain-agnostic: whatever the CV's own Skills section
+    # actually lists, regardless of industry.
+    skills_raw = extract_skill_tokens(
+        skills_text
+    )
+
+    # Combined view used for matching — union of both sources.
+    all_skills = sorted(set(skills) | set(skills_raw))
+
+    # --------------------------------------------------------
+    # EDUCATION
+    # --------------------------------------------------------
+
+    # Prioritize FORMAL EDUCATION because some CVs use
+    # multi-column layouts. PDF text extraction may place
+    # another column between EDUCATION and its actual content.
+    education_text = _section(
+        text,
+        [
+            "formal education",
+        ]
+    )
+
+    # Fallback for CVs that do not have a FORMAL EDUCATION
+    # subsection.
+    if not education_text:
+        education_text = _section(
+            text,
+            [
+                "education",
+                "education level",
+                "academic background",
+                "academic qualification",
+                "academic qualifications",
+                "educational background",
+                "educational qualification",
+                "education qualification",
+
+                "pendidikan",
+                "riwayat pendidikan",
+                "latar belakang pendidikan",
+            ]
+        )
+
+    education = extract_education(
+        education_text
+)
+
+    # --------------------------------------------------------
+    # RETURN
+    # --------------------------------------------------------
 
     return {
-        "candidate": profile["name"],
-        "overall_score": round(overall_score, 2),
-        "recommendation": recommendation,
-        "mandatory_requirements_met": mandatory_requirements_met,
-        "score_breakdown": breakdown,
-        "matched_requirements": {
-            "required_skills": required_result["matched"],
-            "preferred_skills": preferred_result["matched"],
-        },
-        "missing_requirements": {
-            "required_skills": required_result["missing"],
-            "preferred_skills": preferred_result["missing"],
-        },
-        "evidence": {
-            "required_skills": required_evidence,
-            "preferred_skills": preferred_evidence,
-        },
-        "candidate_profile": {
-            "skills": profile.get("skills", []),
-            "experience_years": profile.get("experience_years", 0.0),
-            "education": profile.get("education", {}),
-        },
-        "recommendation_reasons": reasons,
+        "name": extract_name(
+            text,
+            Path(source).stem
+            if source
+            else "Unknown Candidate"
+        ),
+
+        "skills": all_skills,
+
+        "skills_curated": skills,
+
+        "skills_raw": skills_raw,
+
+        "experience_years":
+            experience_years,
+
+        "education":
+            education,
+
+        "experience_text":
+            experience_text,
+
+        "skills_text":
+            skills_text,
+
+        "education_text":
+            education_text,
+
+        "raw_text":
+            text,
+
+        "source":
+            source,
     }
-
-
-# ============================================================
-# RANK CANDIDATES
-# ============================================================
-
-def rank_candidates(profiles, jd_text, model_name=DEFAULT_MODEL):
-    job = parse_job_description(jd_text)
-    matcher = SemanticMatcher(model_name)
-
-    results = []
-    for profile in profiles:
-        semantic_score = matcher.similarity(profile.get("raw_text", ""), jd_text)
-        result = score_candidate(profile, job, semantic_score, semantic_matcher=matcher)
-        results.append(result)
-
-    results.sort(key=lambda item: item["overall_score"], reverse=True)
-    return results, job
