@@ -441,6 +441,21 @@ def render_meter(label, value, color):
     )
 
 
+def display_education_fields(education: dict):
+    """
+    Prefer the literal phrase(s) as written in the document
+    (e.g. "teknik informatika") over the canonical booster
+    bucket name (e.g. "information technology"), which is only
+    used internally for reliable matching.
+    """
+    fields = (
+        education.get("fields_display")
+        or education.get("fields_raw")
+        or education.get("fields", [])
+    )
+    return ", ".join(fields) if fields else "-"
+
+
 # ============================================================
 # HERO HEADER
 # ============================================================
@@ -496,12 +511,11 @@ with st.sidebar:
 
     else:
 
-       jd = st.text_area(
-        "Masukkan Job Description",
-        height=260,
-        label_visibility="collapsed",
-        placeholder="Tulis Job Description di sini...",
-    
+        jd = st.text_area(
+            "Masukkan Job Description",
+            height=260,
+            label_visibility="collapsed",
+            placeholder="Tulis Job Description di sini...",
         )
 
     render_html('<div class="section-label"><span class="num">02</span> CV Kandidat</div>')
@@ -637,7 +651,7 @@ if run_screening:
     required_skills = job.get("required_skills", [])
     preferred_skills = job.get("preferred_skills", [])
     min_experience = job.get("min_experience_years", 0)
-    education_fields = job.get("education_fields", [])
+    education_fields_jd = job.get("education_fields_raw") or job.get("education_fields", [])
 
     req_col1, req_col2 = st.columns(2)
 
@@ -673,7 +687,7 @@ if run_screening:
         render_html(f"""
             <div class="req-panel">
                 <h5>Education</h5>
-                <div class="kpi-value accent" style="font-size:1.25rem;">{esc(", ".join(education_fields) or "-")}</div>
+                <div class="kpi-value accent" style="font-size:1.25rem;">{esc(", ".join(education_fields_jd) or "-")}</div>
             </div>
         """)
 
@@ -786,12 +800,11 @@ if run_screening:
                 with profile_col1:
                     experience_years = candidate_profile.get("experience_years", 0)
                     education = candidate_profile.get("education", {})
-                    fields = education.get("fields", [])
 
                     render_html(f"""
                         <div class="fact"><b>Experience:</b> {experience_years:.1f} years</div>
                         <div class="fact"><b>Degree:</b> {esc(education.get("degree") or "-")}</div>
-                        <div class="fact"><b>Education Field:</b> {esc(", ".join(fields) or "-")}</div>
+                        <div class="fact"><b>Education Field:</b> {esc(display_education_fields(education))}</div>
                     """)
 
                 with profile_col2:

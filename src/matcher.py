@@ -379,8 +379,14 @@ def _line_is_jd_header(line: str, header_keys) -> bool:
     True kalau `line` adalah baris heading (bukan isi biasa).
 
     Dibatasi pada baris pendek (<=6 kata) supaya kalimat isi yang
-    kebetulan diawali kata yang sama seperti heading (mis. "Requirements
-    gathering was part of my role...") tidak salah dianggap heading.
+    kebetulan diawali kata yang sama seperti heading tidak salah
+    dianggap heading.
+
+    FIX: sebelumnya juga menerima `key.startswith(hk)`, yang bisa
+    salah anggap baris requirement pendek seperti "Location for
+    site visits" sebagai heading section (karena "location" ada
+    di JD_OTHER_HEADERS) dan diam-diam memotong isi Requirements
+    di tengah jalan. Sekarang HARUS exact match.
     """
     words = line.strip().split()
     if not words or len(words) > 6:
@@ -390,7 +396,7 @@ def _line_is_jd_header(line: str, header_keys) -> bool:
     if not key:
         return False
 
-    return any(key == hk or key.startswith(hk) for hk in header_keys)
+    return key in header_keys
 
 
 def _jd_section(text: str, start_headers) -> str:
@@ -404,9 +410,11 @@ def _jd_section(text: str, start_headers) -> str:
 
     lines = [ln.strip() for ln in text.splitlines() if ln.strip()]
 
+    start_header_keys = {_jd_header_key(h) for h in start_headers}
+
     start = None
     for i, line in enumerate(lines):
-        if _line_is_jd_header(line, {_jd_header_key(h) for h in start_headers}):
+        if _line_is_jd_header(line, start_header_keys):
             start = i + 1
             break
 
@@ -426,9 +434,9 @@ def _jd_section(text: str, start_headers) -> str:
 # NOISE / TRAIT / ACTION-VERB WORD LISTS
 #
 # Dipakai untuk membuang pecahan kalimat (bukan nama skill) yang
-# lolos dari proses split — inilah perbaikan utama yang diminta:
-# "visionary", "learner", "available join asap", "ideas", "build",
-# "plan" dan sejenisnya tidak lagi masuk sebagai required_skills.
+# lolos dari proses split — "visionary", "learner", "available
+# join asap", "ideas", "build", "plan" dan sejenisnya tidak lagi
+# masuk sebagai required_skills.
 # ============================================================
 
 _JD_ACTION_VERBS = {

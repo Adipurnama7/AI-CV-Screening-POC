@@ -553,11 +553,10 @@ def extract_name(
 # ============================================================
 # SKILL ONTOLOGY
 #
-# NOTE: This dictionary is now treated as an optional "booster"
-# for known synonym clusters (e.g. typo/EN-ID variants of a
-# specific tool name). It is NOT the sole source of truth for
-# what counts as a "skill" anymore — that would only work for
-# CVs in the architecture/design domain it was written for.
+# NOTE: This dictionary is treated as an optional "booster" for
+# known synonym clusters. It is NOT the sole source of truth for
+# what counts as a "skill" — that would only work for CVs in the
+# architecture/design domain it was originally written for.
 #
 # Generic, domain-agnostic skill discovery happens separately
 # via `extract_skill_tokens()`, which reads whatever the CV's
@@ -774,6 +773,19 @@ def _contains_alias(text: str, alias: str) -> bool:
     return re.search(pattern, text.lower()) is not None
 
 
+def _find_alias_span(text: str, alias: str):
+    """
+    Return the literal substring in `text` that matches `alias`,
+    preserving the original casing/spacing found in the document
+    (e.g. searching for the alias "teknik informatika" against a
+    CV that literally wrote "Teknik Informatika" returns that
+    exact original substring). Returns None if not found.
+    """
+    pattern = r"(?<!\w)" + re.escape(alias) + r"(?!\w)"
+    match = re.search(pattern, text, flags=re.IGNORECASE)
+    return match.group(0) if match else None
+
+
 def extract_skills(text: str):
     """
     Extract skills known via the curated SKILL_ALIASES booster.
@@ -903,10 +915,13 @@ DEGREE_ALIASES = {
 # EDUCATION FIELDS — booster dictionary
 #
 # Same idea as SKILL_ALIASES: kept as a fallback so common
-# fields still resolve to a stable canonical name, but it is
-# no longer the only way education fields are detected. See
-# `extract_education_field_phrases()` for the dynamic path,
-# which reads whatever field the CV/JD actually names.
+# fields still resolve to a stable canonical bucket, but it is
+# no longer the only way education fields are detected — and
+# critically, the *canonical bucket name* (e.g. "information
+# technology") is no longer what gets shown to the user. See
+# `extract_education()` below: the LITERAL alias text that was
+# actually found in the document (e.g. "teknik informatika") is
+# what ends up in `fields_raw`/`fields_display`.
 # ============================================================
 
 EDUCATION_FIELDS = {
@@ -925,6 +940,7 @@ EDUCATION_FIELDS = {
 
     "civil engineering": [
         "civil engineering",
+        "teknik sipil",
         "sipil",
     ],
 
@@ -989,8 +1005,21 @@ EDUCATION_FIELDS = {
 # in text, e.g. "Bachelor of Computer Science", "S1 Teknik
 # Informatika", "Jurusan Manajemen", "Degree in Marketing".
 _EDUCATION_FIELD_PATTERNS = [
-    r"(?:bachelor'?s?|master'?s?|diploma|sarjana|magister|s1|s2|d3|d4)"
+    # English style: "Bachelor of/in X", "Master's in X",
+    # "Sarjana di X", "S1 jurusan X"
+    r"(?:bachelor'?s?|master'?s?|diploma|sarjana|magister)"
     r"\s+(?:degree\s+)?(?:in|of|dalam|di|jurusan)\s+"
+    r"([A-Za-zÀ-ÿ][A-Za-zÀ-ÿ\s/&\-]{2,60})",
+
+    # Indonesian short degree codes directly followed by the
+    # field name, with or without a connector word/dash —
+    # e.g. "S1 Teknik Informatika", "S1 - Manajemen",
+    # "D3 Akuntansi". This is the common format that was
+    # previously MISSED, causing the booster dictionary
+    # (canonical bucket name) to be shown instead of the
+    # literal field the CV actually wrote.
+    r"\b(?:s1|s2|d3|d4)\b\s*[-:]?\s*"
+    r"(?:jurusan\s+|di\s+|dalam\s+)?"
     r"([A-Za-zÀ-ÿ][A-Za-zÀ-ÿ\s/&\-]{2,60})",
 
     r"(?:jurusan|program studi|prodi)\s+"
@@ -1004,6 +1033,23 @@ _EDUCATION_FIELD_STOPWORDS = {
     "a", "an", "the", "related", "field", "fields", "etc",
     "other", "others", "any", "relevant", "similar",
 }
+
+# If a captured "field" phrase actually starts with one of these
+# words, it's almost certainly an institution name that got
+# swept up by the adjacency pattern above (e.g. "S1 Universitas
+# XYZ"), not a field of study — so it gets discarded rather than
+# shown as if it were the candidate's major.
+_INSTITUTION_LEAD_WORDS = {
+    "universitas", "university", "institut", "institute",
+    "politeknik", "polytechnic", "sekolah", "college", "akademi",
+    "academy", "stikes", "stie", "stmik", "stia", "upi", "itb",
+    "ugm", "ui", "its",
+}
+
+
+def _looks_like_institution(phrase: str) -> bool:
+    words = phrase.lower().split()
+    return bool(words) and words[0] in _INSTITUTION_LEAD_WORDS
 
 
 def extract_education_field_phrases(text: str):
@@ -1066,6 +1112,9 @@ def extract_education_field_phrases(text: str):
                 if part.lower() in _EDUCATION_FIELD_STOPWORDS:
                     continue
 
+                if _looks_like_institution(part):
+                    continue
+
                 phrases.append(part.lower())
 
     return list(dict.fromkeys(phrases))
@@ -1073,8 +1122,25 @@ def extract_education_field_phrases(text: str):
 
 def extract_education(text: str):
     """
-    Extract highest / most relevant education level
-    and education fields from the education section.
+    Extract highest / most relevant education level and
+    education fields from the education section.
+
+    Returns:
+        degree:         "bachelor" | "master" | "diploma" |
+                         "vocational" | None
+        fields:          canonical bucket names (e.g.
+                         "information technology") — used
+                         internally for reliable matching.
+        fields_raw:      literal phrase(s) as actually written
+                         in the document (e.g. "teknik
+                         informatika") — booster-dictionary
+                         alias hits AND dynamically regex-
+                         extracted phrases, combined.
+        fields_display:  best human-readable version for UI —
+                         prefers fields_raw (what the candidate
+                         actually wrote), falls back to the
+                         canonical bucket names only if nothing
+                         literal was captured.
     """
 
     low = normalize_text(text)
@@ -1149,33 +1215,56 @@ def extract_education(text: str):
         degree = "bachelor"
 
     # --------------------------------------------------------
-    # EDUCATION FIELD (booster dictionary — canonical buckets)
+    # EDUCATION FIELD (booster dictionary — canonical buckets
+    # + the literal alias text that actually matched, so the
+    # UI can show what the CV really says instead of a
+    # translated/renamed bucket label).
     # --------------------------------------------------------
 
     fields = []
+    fields_from_booster_literal = []
 
     for canonical, aliases in EDUCATION_FIELDS.items():
 
-        if any(
-            _contains_alias(low, alias)
+        matched_aliases = [
+            alias
             for alias in aliases
-        ):
-            fields.append(canonical)
+            if _contains_alias(low, alias)
+        ]
+
+        if not matched_aliases:
+            continue
+
+        fields.append(canonical)
+
+        # Prefer the longest/most specific alias that matched
+        # (e.g. "teknik informatika" over just "informatika")
+        # so the displayed phrase is as complete as possible.
+        best_alias = max(matched_aliases, key=len)
+        literal = _find_alias_span(text, best_alias)
+
+        if literal:
+            fields_from_booster_literal.append(literal.strip().lower())
 
     # --------------------------------------------------------
-    # EDUCATION FIELD (dynamic — literal phrase from the text)
-    #
-    # This is what makes a "Manajemen" or "Psikologi" or
-    # "Akuntansi" graduate resolve to *something* even if that
-    # exact field isn't in the booster dictionary above.
+    # EDUCATION FIELD (dynamic — literal phrase from the text,
+    # for fields that aren't in the booster dictionary at all,
+    # e.g. an unusual major name).
     # --------------------------------------------------------
 
-    fields_raw = extract_education_field_phrases(text)
+    fields_raw_dynamic = extract_education_field_phrases(text)
+
+    fields_raw = list(dict.fromkeys(
+        fields_from_booster_literal + fields_raw_dynamic
+    ))
+
+    fields_display = fields_raw if fields_raw else sorted(set(fields))
 
     return {
         "degree": degree,
         "fields": sorted(set(fields)),
         "fields_raw": fields_raw,
+        "fields_display": fields_display,
     }
 
 
