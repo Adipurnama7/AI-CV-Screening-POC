@@ -338,6 +338,9 @@ JD_PREFERRED_HEADERS = [
     "good to have", "advantages", "additional qualifications",
     "plus point", "plus points", "bonus",
     "nilai tambah", "kualifikasi tambahan",
+
+    "kemampuan tambahan", "skill tambahan", "keahlian tambahan",
+    "nilai plus", "poin plus",
 ]
 
 JD_RESPONSIBILITY_HEADERS = [
@@ -479,6 +482,9 @@ _JD_NOISE_WORDS = {
     "juga", "terkait", "relevan", "berkaitan", "bidang",
     "minimal", "maksimal", "wajib", "diutamakan",
 
+    "memiliki", "kemampuan", "keahlian", "baik", "kuat", "handal",
+    "bagus", "mumpuni", "pengambilan", "pengolahan", "pengelolaan",
+    
     # frasa umum yang bukan skill
     "available", "asap", "join", "ideas", "idea", "things", "thing",
     "field", "fields", "related", "other", "others", "etc",
@@ -510,6 +516,10 @@ _JD_LINE_FILLER_PATTERNS = [
     r"^mampu\s+",
     r"^berpengalaman\s+(?:dalam|di)\s+",
     r"^menggunakan\s+",
+    r"^memiliki\s+(?:kemampuan|keahlian|pengalaman)\s+(?:dalam\s+|di\s+)?",
+    r"^kemampuan\s+(?:dalam\s+|di\s+)?",
+    r"^keahlian\s+(?:dalam\s+|di\s+)?",
+    r"^dapat\s+(?:menggunakan|melakukan|mengoperasikan)\s+",
 ]
 
 
@@ -523,7 +533,9 @@ def _split_requirement_line(line, soft_skill_sink=None):
     2. Baris berisi pola pendidikan ("degree in ...", "jurusan ...",
        "S1/S2/D3/D4 ...") -> dibuang total (sudah ditangani terpisah
        lewat extract_education_field_phrases).
-    3. Tiap potongan hasil split:
+    3. Baris berisi metadata "Label: Value" (ketersediaan, lokasi,
+       gaji, status, dst) -> dibuang total, bukan skill.
+    4. Tiap potongan hasil split:
        a. Cocok skill terkurasi dikenal -> selalu dipertahankan.
        b. Cocok soft-trait/soft-skill dikenal -> dialihkan ke
           soft_skill_sink, TIDAK masuk required/preferred.
@@ -545,9 +557,8 @@ def _split_requirement_line(line, soft_skill_sink=None):
 
     # Baris pendidikan (EN maupun ID) -> dibuang total, sudah
     # ditangani terpisah lewat extract_education_field_phrases.
-    # FIX: sekarang juga menangkap "S1/S2/D3/D4 <bidang>" tanpa
-    # kata sambung "jurusan"/"gelar" (mis. "Minimal S1 Teknik
-    # Informatika").
+    # Menangkap juga "S1/S2/D3/D4 <bidang>" tanpa kata sambung
+    # "jurusan"/"gelar" (mis. "Minimal S1 Teknik Informatika").
     if (
         re.search(r"\bdegree\s+(in|of)\b", low)
         or re.search(r"\b(jurusan|gelar)\b", low)
@@ -555,8 +566,25 @@ def _split_requirement_line(line, soft_skill_sink=None):
     ):
         return []
 
+    # Baris metadata "Label: Value" (mis. "Ketersediaan: Secepatnya",
+    # "Lokasi: Jakarta", "Gaji: Rp X") -> bukan skill, dibuang total.
+    # Info ketersediaan sendiri sudah ditangani terpisah lewat
+    # variabel `availability` di parse_job_description.
+    if re.search(
+        r"^(?:ketersediaan|availability|status|lokasi|location|"
+        r"gaji|salary|jam kerja|working hours|kontrak|contract type|"
+        r"tipe pekerjaan|employment type)\s*:",
+        low,
+    ):
+        return []
+
     for pattern in _JD_LINE_FILLER_PATTERNS:
         low = re.sub(pattern, "", low, flags=re.IGNORECASE).strip()
+
+    # Potong klausa tujuan "... untuk melakukan X" — di JD Indonesia,
+    # "untuk" hampir selalu memperkenalkan alasan/tujuan, bukan skill
+    # tambahan. "SQL untuk pengambilan data" -> "SQL".
+    low = re.sub(r"\s+untuk\s+.*$", "", low).strip()
 
     # Buang noise trailing "...or a related field" (EN) dan
     # "...atau bidang terkait/relevan" (ID).
@@ -567,9 +595,8 @@ def _split_requirement_line(line, soft_skill_sink=None):
         low,
     )
 
-    # FIX: split sekarang juga memecah di "dan"/"atau" (ID),
-    # bukan cuma "and"/"or" (EN) — supaya kata sambung tidak
-    # ikut terbawa jadi bagian depan sebuah chip skill.
+    # Split juga di "dan"/"atau" (ID), bukan cuma "and"/"or" (EN) —
+    # supaya kata sambung tidak ikut terbawa jadi bagian depan chip.
     parts = re.split(
         r",|\bsuch as\b|\bincluding\b|\band\b|\bor\b|\bdan\b|\batau\b|/|\(|\)|;",
         low,
@@ -586,6 +613,11 @@ def _split_requirement_line(line, soft_skill_sink=None):
         # Buang sufiks " skill(s)" generik agar "technical drawing
         # skills" -> "technical drawing" (sudah dikenal sistem).
         part = re.sub(r"\s+skills?$", "", part).strip()
+
+        # Buang akhiran kualitatif generik ("yang baik/kuat/dst").
+        part = re.sub(
+            r"\s+yang\s+(?:baik|kuat|handal|bagus|mumpuni)$", "", part
+        ).strip()
         if not part:
             continue
 
