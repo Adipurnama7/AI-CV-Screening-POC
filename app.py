@@ -466,9 +466,7 @@ render_html(
         <span class="console-eyebrow"><span class="dot"></span>AI SCREENING ENGINE · LIVE</span>
         <div class="console-title">CV Screening Console</div>
         <p class="console-sub">
-            Upload Job Description dan CV kandidat, lalu biarkan engine melakukan ekstraksi
-            informasi, semantic matching, dan ranking otomatis — lengkap dengan rekomendasi
-            shortlist yang bisa dipertanggungjawabkan.
+          Solusi AI/ML untuk mengotomatisasi seleksi CV — dari ekstraksi informasi, pencocokan kualifikasi, hingga rekomendasi kandidat siap wawancara.
         </p>
     </div>
     """
@@ -533,7 +531,7 @@ with st.sidebar:
     st.markdown("<br>", unsafe_allow_html=True)
 
     run_screening = st.button(
-        "🚀  Screen Candidates",
+        "Screen Candidates",
         type="primary",
         use_container_width=True,
     )
@@ -542,6 +540,27 @@ with st.sidebar:
         "Hasil screening menyesuaikan Job Description yang dipilih. "
         "Jika JD diganti, required skills, preferred skills, dan ranking "
         "kandidat dapat berubah."
+    )
+    
+    st.markdown(
+        """
+        <div style="
+            margin-top: 18px;
+            padding-top: 12px;
+            border-top: 1px solid rgba(255,255,255,0.10);
+            text-align: center;
+            color: rgba(255,255,255,0.55);
+            font-size: 0.72rem;
+            line-height: 1.5;
+        ">
+             Powered by <strong style="color: rgba(255,255,255,0.8);">
+            Adi Purnama
+            </strong>
+            <br>
+            AI/ML &amp; Software Engineering
+        </div>
+        """,
+        unsafe_allow_html=True,
     )
 
 
@@ -589,7 +608,7 @@ if run_screening:
         # Preview Job Description
         # ----------------------------------------------------
 
-        with st.expander("👀 Preview Job Description", expanded=False):
+        with st.expander("Preview Job Description", expanded=False):
             st.text(jd[:5000] + ("\n\n...[dipotong]" if len(jd) > 5000 else ""))
 
         # ====================================================
