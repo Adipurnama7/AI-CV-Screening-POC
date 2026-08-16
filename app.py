@@ -655,13 +655,16 @@ def render_ranking_rows(results, page_size=5):
     st.session_state["sc_ranking_page"] = current_page
 
 
-def render_cv_preview(file_data: dict, key_prefix: str):
+def render_cv_preview(file_data: dict, key_prefix: str, max_pages: int = 5):
     """
     Render an inline preview + download button for a candidate's
     original CV file.
 
-    - PDF: embedded inline via a base64 iframe (native browser PDF
-      viewer, no extra dependency needed).
+    - PDF: rendered as page images via PyMuPDF (fitz) and shown with
+      st.image(). We deliberately avoid <iframe> + base64 data: URIs
+      here — some browsers (notably Microsoft Edge's SmartScreen)
+      actively block that pattern as a phishing/malware heuristic,
+      which produced the "Halaman ini telah diblokir" error.
     - DOCX/TXT: original binary can be downloaded, and the already-
       extracted plain text is shown as a readable preview (browsers
       can't render .docx natively without conversion).
@@ -706,13 +709,44 @@ def render_cv_preview(file_data: dict, key_prefix: str):
     st.markdown("<div style='height:10px;'></div>", unsafe_allow_html=True)
 
     if ext == ".pdf" and file_bytes:
-        base64_pdf = base64.b64encode(file_bytes).decode("utf-8")
-        pdf_iframe = (
-            f'<iframe src="data:application/pdf;base64,{base64_pdf}" '
-            f'width="100%" height="480px" '
-            f'style="border:1px solid var(--border); border-radius:10px;"></iframe>'
-        )
-        st.markdown(pdf_iframe, unsafe_allow_html=True)
+        try:
+            import fitz  # PyMuPDF — already a dependency for PDF text extraction
+
+            doc = fitz.open(stream=file_bytes, filetype="pdf")
+            page_count = doc.page_count
+            pages_to_render = min(page_count, max_pages)
+
+            for page_index in range(pages_to_render):
+                page = doc.load_page(page_index)
+                # 2x zoom for readable resolution without huge file size.
+                pix = page.get_pixmap(matrix=fitz.Matrix(2, 2))
+                image_bytes = pix.tobytes("png")
+
+                st.image(
+                    image_bytes,
+                    caption=f"Halaman {page_index + 1} dari {page_count}",
+                    use_container_width=True,
+                )
+
+            doc.close()
+
+            if page_count > max_pages:
+                st.caption(
+                    f"Menampilkan {max_pages} dari {page_count} halaman. "
+                    f"Unduh file untuk melihat seluruh isi."
+                )
+
+        except Exception as error:
+            st.warning(
+                f"Tidak dapat menampilkan pratinjau visual PDF ({error}). "
+                f"Silakan gunakan tombol download di atas."
+            )
+            preview_text = raw_text.strip() or "(Tidak ada teks yang berhasil diekstrak dari file ini.)"
+            if len(preview_text) > 6000:
+                preview_text = preview_text[:6000] + "\n\n...[dipotong]"
+            render_html(f"""
+                <div class="cv-preview-box">{esc(preview_text)}</div>
+            """)
     else:
         preview_text = raw_text.strip() or "(Tidak ada teks yang berhasil diekstrak dari file ini.)"
         if len(preview_text) > 6000:
