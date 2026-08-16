@@ -472,6 +472,13 @@ _JD_NOISE_WORDS = {
     "or", "is", "are", "be", "this", "that", "from", "as", "by", "at",
     "into", "within", "across", "their", "our", "your", "you", "we",
     "they", "it", "its", "who", "which",
+
+    # kata sambung / partikel Bahasa Indonesia — BARU
+    "dan", "atau", "yang", "dengan", "di", "ke", "dari", "untuk",
+    "pada", "dalam", "adalah", "akan", "dapat", "bisa", "serta",
+    "juga", "terkait", "relevan", "berkaitan", "bidang",
+    "minimal", "maksimal", "wajib", "diutamakan",
+
     # frasa umum yang bukan skill
     "available", "asap", "join", "ideas", "idea", "things", "thing",
     "field", "fields", "related", "other", "others", "etc",
@@ -513,9 +520,9 @@ def _split_requirement_line(line, soft_skill_sink=None):
     Urutan keputusan per potongan:
     1. Baris itu sendiri adalah heading JD (Responsibilities,
        Requirements, dst) yang nyasar ke isi -> dibuang total.
-    2. Baris berisi pola pendidikan ("degree in ...", "jurusan ...")
-       -> dibuang total (sudah ditangani terpisah lewat
-       extract_education_field_phrases).
+    2. Baris berisi pola pendidikan ("degree in ...", "jurusan ...",
+       "S1/S2/D3/D4 ...") -> dibuang total (sudah ditangani terpisah
+       lewat extract_education_field_phrases).
     3. Tiap potongan hasil split:
        a. Cocok skill terkurasi dikenal -> selalu dipertahankan.
        b. Cocok soft-trait/soft-skill dikenal -> dialihkan ke
@@ -536,16 +543,35 @@ def _split_requirement_line(line, soft_skill_sink=None):
 
     low = line.lower()
 
-    if re.search(r"\bdegree\s+(in|of)\b", low) or re.search(r"\b(jurusan|gelar)\b", low):
+    # Baris pendidikan (EN maupun ID) -> dibuang total, sudah
+    # ditangani terpisah lewat extract_education_field_phrases.
+    # FIX: sekarang juga menangkap "S1/S2/D3/D4 <bidang>" tanpa
+    # kata sambung "jurusan"/"gelar" (mis. "Minimal S1 Teknik
+    # Informatika").
+    if (
+        re.search(r"\bdegree\s+(in|of)\b", low)
+        or re.search(r"\b(jurusan|gelar)\b", low)
+        or re.search(r"\b(s1|s2|d3|d4)\b", low)
+    ):
         return []
 
     for pattern in _JD_LINE_FILLER_PATTERNS:
         low = re.sub(pattern, "", low, flags=re.IGNORECASE).strip()
 
+    # Buang noise trailing "...or a related field" (EN) dan
+    # "...atau bidang terkait/relevan" (ID).
     low = re.sub(r"\bor\s+a\s+related\s+field\b.*", "", low)
+    low = re.sub(
+        r"\batau\s+(?:bidang|yang)\s+(?:terkait|relevan|berkaitan)\b.*",
+        "",
+        low,
+    )
 
+    # FIX: split sekarang juga memecah di "dan"/"atau" (ID),
+    # bukan cuma "and"/"or" (EN) — supaya kata sambung tidak
+    # ikut terbawa jadi bagian depan sebuah chip skill.
     parts = re.split(
-        r",|\bsuch as\b|\bincluding\b|\band\b|\bor\b|/|\(|\)|;",
+        r",|\bsuch as\b|\bincluding\b|\band\b|\bor\b|\bdan\b|\batau\b|/|\(|\)|;",
         low,
     )
 
@@ -598,7 +624,6 @@ def _split_requirement_line(line, soft_skill_sink=None):
         phrases.append(part)
 
     return phrases
-
 
 def extract_requirement_phrases(section_text, max_items=30, soft_skill_sink=None):
     """

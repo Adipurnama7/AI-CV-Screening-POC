@@ -469,8 +469,162 @@ st.markdown(
         border: 1px solid var(--border);
         border-radius: 12px;
     }
-    hr, div[data-testid="stDivider"]{
+   hr, div[data-testid="stDivider"]{
         border-color: var(--border) !important;
+    }
+
+    /* ============================================================
+       RESPONSIVE — TABLET (≤ 992px)
+       ============================================================ */
+    @media (max-width: 992px){
+        .block-container{
+            padding-left: 1rem;
+            padding-right: 1rem;
+        }
+        .console-title{
+            font-size: 1.7rem;
+        }
+        .kpi-grid{
+            grid-template-columns: repeat(3, 1fr);
+        }
+        .console-hero{
+            padding: 22px 20px 20px 20px;
+        }
+    }
+
+    /* ============================================================
+       RESPONSIVE — MOBILE (≤ 640px)
+       ============================================================ */
+    @media (max-width: 640px){
+
+        .block-container{
+            padding-left: 0.7rem;
+            padding-right: 0.7rem;
+            padding-top: 1rem;
+        }
+
+        .console-hero{
+            padding: 18px 16px 16px 16px;
+            border-radius: 12px;
+        }
+        .console-title{
+            font-size: 1.35rem;
+        }
+        .console-sub{
+            font-size: 0.85rem;
+        }
+        .console-eyebrow{
+            font-size: 0.62rem;
+            padding: 3px 10px;
+        }
+
+        .section-label{
+            font-size: 0.66rem;
+            margin: 20px 0 10px 0;
+        }
+
+        /* KPI cards: 2 per row instead of 5 */
+        .kpi-grid{
+            grid-template-columns: repeat(2, 1fr);
+            gap: 10px;
+        }
+        .kpi-card{
+            padding: 12px 14px;
+        }
+        .kpi-value{
+            font-size: 1.5rem;
+        }
+
+        /* req-panel padding tighter on mobile */
+        .req-panel{
+            padding: 14px 16px;
+        }
+
+        /* Candidate card padding tighter */
+        .cand-card{
+            padding: 16px 16px;
+        }
+        .cand-name{
+            font-size: 1.05rem;
+        }
+        .gauge{
+            width: 58px; height: 58px;
+        }
+        .gauge::after{
+            width: 45px; height: 45px;
+        }
+        .gauge-value{
+            font-size: 0.8rem;
+        }
+        .status-chip{
+            font-size: 0.64rem;
+            padding: 4px 10px;
+        }
+
+        /* Meters: smaller text */
+        .meter-head{
+            font-size: 0.72rem;
+        }
+
+        /* ---- Force Streamlit's horizontal column blocks to wrap
+               and stack vertically on narrow screens. This is what
+               makes st.columns() layouts (ranking rows, KPI blocks
+               inside columns, top-row gauge/status, matched/missing
+               panels, pagination controls) behave responsively
+               instead of squishing into unreadable slivers. ---- */
+        div[data-testid="stHorizontalBlock"]{
+            flex-wrap: wrap !important;
+        }
+        div[data-testid="stHorizontalBlock"] > div[data-testid="column"]{
+            min-width: 100% !important;
+            flex: 1 1 100% !important;
+        }
+
+        /* Ranking row: keep rank-number/name/score on one compact
+           line group, let recommendation/mandatory/button wrap
+           below it, rather than every single field on its own
+           full-width row (which would make rows very tall). */
+        div[data-testid="stHorizontalBlock"] div[data-testid="stVerticalBlockBorderWrapper"]
+            div[data-testid="stHorizontalBlock"] > div[data-testid="column"]{
+            min-width: 46% !important;
+            flex: 1 1 46% !important;
+        }
+
+        .stButton > button{
+            font-size: 0.82rem !important;
+            padding: 0.4rem 0.6rem !important;
+        }
+        .stDownloadButton > button{
+            font-size: 0.8rem !important;
+        }
+
+        .fact{
+            font-size: 0.8rem;
+        }
+        .pill{
+            font-size: 0.74rem;
+            padding: 4px 10px;
+        }
+
+        /* PDF preview images: full width already via use_container_width,
+           just tighten surrounding spacing */
+        .cv-preview-box{
+            font-size: 0.72rem;
+            padding: 10px 12px;
+            max-height: 360px;
+        }
+    }
+
+    /* ============================================================
+       RESPONSIVE — VERY SMALL PHONES (≤ 400px)
+       ============================================================ */
+    @media (max-width: 400px){
+        .kpi-grid{
+            grid-template-columns: repeat(1, 1fr);
+        }
+        .console-title{
+            font-size: 1.15rem;
+        }
     }
     </style>
     """,
