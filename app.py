@@ -4,6 +4,8 @@ import tempfile
 import json
 import html
 import textwrap
+import base64
+import pandas as pd
 
 from src.extractor import (
     extract_text,
@@ -172,7 +174,7 @@ st.markdown(
     /* ---------- KPI strip ---------- */
     .kpi-grid{
         display: grid;
-        grid-template-columns: repeat(4, 1fr);
+        grid-template-columns: repeat(5, 1fr);
         gap: 12px;
         margin-bottom: 6px;
     }
@@ -200,6 +202,7 @@ st.markdown(
     .kpi-value.accent{ color: var(--accent); }
     .kpi-value.good{ color: var(--good); }
     .kpi-value.teal{ color: var(--teal); }
+    .kpi-value.bad{ color: var(--bad); }
 
     /* ---------- requirement pill list ---------- */
     .req-panel{
@@ -233,7 +236,69 @@ st.markdown(
     .pill.miss{ background: var(--bad-soft); color: var(--bad); border-color: rgba(240,85,91,0.3); }
     .pill-empty{ color: var(--text-dim); font-size: 0.85rem; font-family: var(--font-mono); }
 
-    /* ---------- candidate card ---------- */
+    /* ---------- ranking table ---------- */
+    .rank-table-wrap{
+        background: var(--panel);
+        border: 1px solid var(--border);
+        border-radius: 14px;
+        padding: 10px 14px;
+        margin-bottom: 18px;
+        overflow-x: auto;
+    }
+    table.rank-table{
+        width: 100%;
+        border-collapse: collapse;
+        font-family: var(--font-body);
+        font-size: 0.88rem;
+    }
+    table.rank-table thead th{
+        text-align: left;
+        font-family: var(--font-mono);
+        font-size: 0.7rem;
+        letter-spacing: 0.08em;
+        text-transform: uppercase;
+        color: var(--text-dim);
+        padding: 10px 12px;
+        border-bottom: 1px solid var(--border);
+    }
+    table.rank-table tbody td{
+        padding: 11px 12px;
+        border-bottom: 1px solid var(--border);
+        color: var(--text);
+        vertical-align: middle;
+    }
+    table.rank-table tbody tr:last-child td{
+        border-bottom: none;
+    }
+    table.rank-table td.rank-num{
+        font-family: var(--font-mono);
+        color: var(--text-dim);
+        width: 40px;
+    }
+    table.rank-table td.rank-score{
+        font-family: var(--font-mono);
+        font-weight: 600;
+        width: 70px;
+    }
+    table.rank-table td.rank-mandatory{
+        text-align: center;
+        width: 40px;
+    }
+    .table-status-chip{
+        font-family: var(--font-mono);
+        font-size: 0.68rem;
+        letter-spacing: 0.08em;
+        text-transform: uppercase;
+        padding: 4px 11px;
+        border-radius: 999px;
+        white-space: nowrap;
+        display: inline-block;
+    }
+    .table-status-chip.shortlist{ background: var(--good-soft); color: var(--good); border: 1px solid rgba(51,196,129,0.4); }
+    .table-status-chip.review{ background: var(--accent-soft); color: var(--accent); border: 1px solid rgba(242,169,59,0.4); }
+    .table-status-chip.other{ background: var(--bad-soft); color: var(--bad); border: 1px solid rgba(240,85,91,0.4); }
+
+    /* ---------- candidate detail card ---------- */
     .cand-card{
         background: var(--panel);
         border: 1px solid var(--border);
@@ -348,6 +413,27 @@ st.markdown(
     }
     .fact b{ color: var(--text); font-weight: 500; }
 
+    /* CV preview panel */
+    .cv-preview-box{
+        background: var(--panel-2);
+        border: 1px solid var(--border);
+        border-radius: 10px;
+        padding: 14px 16px;
+        max-height: 480px;
+        overflow-y: auto;
+        font-family: var(--font-mono);
+        font-size: 0.78rem;
+        color: var(--text-dim);
+        white-space: pre-wrap;
+        line-height: 1.5;
+    }
+    .cv-meta{
+        font-family: var(--font-mono);
+        font-size: 0.76rem;
+        color: var(--text-dim);
+        margin-bottom: 10px;
+    }
+
     /* ---------- streamlit widget restyle ---------- */
     div[data-testid="stFileUploaderDropzone"]{
         background: var(--panel-2);
@@ -454,6 +540,338 @@ def display_education_fields(education: dict):
         or education.get("fields", [])
     )
     return ", ".join(fields) if fields else "-"
+
+
+def status_chip_class(recommendation):
+    return {
+        "SHORTLIST": "shortlist",
+        "REVIEW": "review",
+    }.get(recommendation, "other")
+
+
+def render_ranking_rows(results, page_size=5):
+    """
+    Row-based ranking "table" with pagination (page_size rows per
+    page) where each row is its own bordered container with a real
+    Streamlit button ("Detail"). Plain HTML buttons inside
+    st.markdown can't trigger Python callbacks, so each row uses
+    st.columns() + st.button() instead of a literal <table> —
+    clicking "Detail" updates sc_selected_index and Streamlit
+    reruns automatically to show that candidate's detail further
+    down the page.
+    """
+
+    total_items = len(results)
+    total_pages = max(1, (total_items + page_size - 1) // page_size)
+
+    current_page = st.session_state.get("sc_ranking_page", 0)
+    if current_page >= total_pages:
+        current_page = total_pages - 1
+    if current_page < 0:
+        current_page = 0
+
+    start = current_page * page_size
+    end = min(start + page_size, total_items)
+    page_results = results[start:end]
+
+    col_ratios = [0.6, 3, 1, 1.6, 1, 1.1]
+
+    # ---- header row ----
+    header_cols = st.columns(col_ratios)
+    header_labels = ["#", "Nama Kandidat", "Score", "Recommendation", "Mandatory", ""]
+    for col, label in zip(header_cols, header_labels):
+        col.markdown(
+            f'<div style="font-family:var(--font-mono); font-size:0.7rem; '
+            f'letter-spacing:0.08em; text-transform:uppercase; color:var(--text-dim); '
+            f'padding-bottom:6px;">{esc(label)}</div>',
+            unsafe_allow_html=True,
+        )
+
+    # ---- data rows (current page only) ----
+    for offset, result in enumerate(page_results):
+        index = start + offset + 1  # global rank number, not just page-local
+
+        candidate = result.get("candidate", "Unknown")
+        score = float(result.get("overall_score", 0) or 0)
+        recommendation = result.get("recommendation", "UNKNOWN")
+        mandatory_met = result.get("mandatory_requirements_met", False)
+
+        chip_class = status_chip_class(recommendation)
+        mandatory_icon = "✓" if mandatory_met else "✕"
+
+        with st.container(border=True):
+            row_cols = st.columns(col_ratios)
+
+            row_cols[0].markdown(
+                f'<div style="font-family:var(--font-mono); color:var(--text-dim); '
+                f'padding-top:6px;">{index:02d}</div>',
+                unsafe_allow_html=True,
+            )
+            row_cols[1].markdown(
+                f'<div style="padding-top:6px; color:var(--text);">{esc(candidate)}</div>',
+                unsafe_allow_html=True,
+            )
+            row_cols[2].markdown(
+                f'<div style="font-family:var(--font-mono); font-weight:600; '
+                f'padding-top:6px; color:{tier_color(score)};">{score:.0f}</div>',
+                unsafe_allow_html=True,
+            )
+            row_cols[3].markdown(
+                f'<span class="table-status-chip {chip_class}">{esc(recommendation)}</span>',
+                unsafe_allow_html=True,
+            )
+            row_cols[4].markdown(
+                f'<div style="text-align:center; padding-top:6px;">{mandatory_icon}</div>',
+                unsafe_allow_html=True,
+            )
+
+            if row_cols[5].button("Detail", key=f"detail_btn_{index}", use_container_width=True):
+                st.session_state["sc_selected_index"] = index - 1
+
+    # ---- pagination controls ----
+    st.markdown("<div style='height:6px;'></div>", unsafe_allow_html=True)
+
+    nav_col1, nav_col2, nav_col3 = st.columns([1, 2, 1])
+
+    with nav_col1:
+        if st.button("← Sebelumnya", key="rank_prev_btn", use_container_width=True, disabled=(current_page == 0)):
+            st.session_state["sc_ranking_page"] = current_page - 1
+            st.rerun()
+
+    with nav_col2:
+        render_html(f"""
+            <div style="text-align:center; padding-top:8px; font-family:var(--font-mono);
+                        font-size:0.8rem; color:var(--text-dim);">
+                Halaman {current_page + 1} dari {total_pages}
+                &nbsp;·&nbsp; Menampilkan {start + 1}–{end} dari {total_items} kandidat
+            </div>
+        """)
+
+    with nav_col3:
+        if st.button("Berikutnya →", key="rank_next_btn", use_container_width=True, disabled=(current_page >= total_pages - 1)):
+            st.session_state["sc_ranking_page"] = current_page + 1
+            st.rerun()
+
+    st.session_state["sc_ranking_page"] = current_page
+
+
+def render_cv_preview(file_data: dict, key_prefix: str):
+    """
+    Render an inline preview + download button for a candidate's
+    original CV file.
+
+    - PDF: embedded inline via a base64 iframe (native browser PDF
+      viewer, no extra dependency needed).
+    - DOCX/TXT: original binary can be downloaded, and the already-
+      extracted plain text is shown as a readable preview (browsers
+      can't render .docx natively without conversion).
+    """
+
+    if not file_data:
+        st.markdown(
+            '<span class="pill-empty">File asli tidak tersedia (mungkin diproses di sesi sebelumnya).</span>',
+            unsafe_allow_html=True,
+        )
+        return
+
+    filename = file_data.get("filename", "cv_file")
+    ext = file_data.get("ext", "").lower()
+    file_bytes = file_data.get("bytes", b"")
+    raw_text = file_data.get("raw_text", "")
+
+    mime_map = {
+        ".pdf": "application/pdf",
+        ".docx": "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+        ".txt": "text/plain",
+        ".md": "text/markdown",
+    }
+    mime_type = mime_map.get(ext, "application/octet-stream")
+
+    render_html(f"""
+        <div class="cv-meta">
+            <b>{esc(filename)}</b> &nbsp;·&nbsp;
+            {esc(ext.upper().replace('.', '') or '?')} &nbsp;·&nbsp;
+            {len(file_bytes) / 1024:.1f} KB
+        </div>
+    """)
+
+    st.download_button(
+        label="⬇ Download CV Asli",
+        data=file_bytes,
+        file_name=filename,
+        mime=mime_type,
+        key=f"dl_{key_prefix}",
+    )
+
+    st.markdown("<div style='height:10px;'></div>", unsafe_allow_html=True)
+
+    if ext == ".pdf" and file_bytes:
+        base64_pdf = base64.b64encode(file_bytes).decode("utf-8")
+        pdf_iframe = (
+            f'<iframe src="data:application/pdf;base64,{base64_pdf}" '
+            f'width="100%" height="480px" '
+            f'style="border:1px solid var(--border); border-radius:10px;"></iframe>'
+        )
+        st.markdown(pdf_iframe, unsafe_allow_html=True)
+    else:
+        preview_text = raw_text.strip() or "(Tidak ada teks yang berhasil diekstrak dari file ini.)"
+        if len(preview_text) > 6000:
+            preview_text = preview_text[:6000] + "\n\n...[dipotong]"
+        render_html(f"""
+            <div class="cv-preview-box">{esc(preview_text)}</div>
+        """)
+
+
+def render_candidate_detail(result, index, name_to_source, cv_file_store):
+    """
+    Full detail card for ONE candidate — same content that used to
+    be shown for every candidate at once. Now rendered only for
+    the candidate currently selected from the ranking table.
+    """
+
+    candidate = result.get("candidate", "Unknown")
+    overall_score = result.get("overall_score", 0)
+    recommendation = result.get("recommendation", "UNKNOWN")
+    mandatory_met = result.get("mandatory_requirements_met", False)
+    breakdown = result.get("score_breakdown", {})
+    matched_requirements = result.get("matched_requirements", {})
+    missing_requirements = result.get("missing_requirements", {})
+    candidate_profile = result.get("candidate_profile", {})
+    recommendation_reasons = result.get("recommendation_reasons", [])
+
+    status_class = status_chip_class(recommendation)
+
+    with st.container(border=False):
+
+        st.markdown('<div class="cand-card">', unsafe_allow_html=True)
+
+        # ---- top row: rank / name / gauge / status ----
+        top_col1, top_col2 = st.columns([3, 1])
+
+        with top_col1:
+            render_html(f"""
+                <div class="gauge-wrap">
+                    {render_gauge(overall_score)}
+                    <div>
+                        <div class="cand-rank">CANDIDATE #{index:02d}</div>
+                        <div class="cand-name">{esc(candidate)}</div>
+                    </div>
+                </div>
+            """)
+
+        with top_col2:
+            render_html(f"""
+                <div style="text-align:right;">
+                    <span class="status-chip {status_class}">{esc(recommendation)}</span>
+                    <div class="mandatory-flag {'ok' if mandatory_met else 'no'}">
+                        {'✓ Mandatory met' if mandatory_met else '✕ Mandatory gap'}
+                    </div>
+                </div>
+            """)
+
+        # ---- score breakdown meters ----
+        meter_col1, meter_col2 = st.columns(2)
+
+        with meter_col1:
+            render_html(
+                render_meter("Required Skills", breakdown.get("required_skill_match", 0), "#3DD9C4")
+                + render_meter("Preferred Skills", breakdown.get("preferred_skill_match", 0), "#F2A93B")
+            )
+
+        with meter_col2:
+            render_html(
+                render_meter("Experience", breakdown.get("experience_match", 0), "#33C481")
+                + render_meter("Education", breakdown.get("education_match", 0), "#8892AC")
+            )
+
+        render_html(
+            render_meter("Semantic Similarity", breakdown.get("semantic_similarity", 0), "#F2A93B")
+        )
+
+        # ---- candidate profile ----
+        with st.expander("👤 Candidate Profile", expanded=True):
+
+            profile_col1, profile_col2 = st.columns(2)
+
+            with profile_col1:
+                experience_years = candidate_profile.get("experience_years", 0)
+                education = candidate_profile.get("education", {})
+
+                render_html(f"""
+                    <div class="fact"><b>Experience:</b> {experience_years:.1f} years</div>
+                    <div class="fact"><b>Degree:</b> {esc(education.get("degree") or "-")}</div>
+                    <div class="fact"><b>Education Field:</b> {esc(display_education_fields(education))}</div>
+                """)
+
+            with profile_col2:
+                skills = candidate_profile.get("skills", [])
+                render_html(f"""
+                    <div class="fact"><b>Detected Skills:</b></div>
+                    {render_pills(skills, "req")}
+                """)
+
+        # ---- view original CV file ----
+        with st.expander("📄 Lihat CV"):
+            source = name_to_source.get(candidate)
+            file_data = cv_file_store.get(source) if source else None
+            render_cv_preview(file_data, key_prefix=f"{index}_{esc(candidate)}")
+
+        # ---- matched / missing requirements ----
+        match_col1, match_col2 = st.columns(2)
+
+        with match_col1:
+            st.markdown('<div class="req-panel">', unsafe_allow_html=True)
+            st.markdown("<h5>✅ Matched Requirements</h5>", unsafe_allow_html=True)
+
+            matched_required = matched_requirements.get("required_skills", [])
+            matched_preferred = matched_requirements.get("preferred_skills", [])
+
+            if matched_required:
+                st.markdown("<div class='fact'><b>Required</b></div>", unsafe_allow_html=True)
+                st.markdown(render_pills(matched_required, "match"), unsafe_allow_html=True)
+            if matched_preferred:
+                st.markdown("<div class='fact' style='margin-top:8px;'><b>Preferred</b></div>", unsafe_allow_html=True)
+                st.markdown(render_pills(matched_preferred, "match"), unsafe_allow_html=True)
+            if not matched_required and not matched_preferred:
+                st.markdown('<span class="pill-empty">Tidak ada</span>', unsafe_allow_html=True)
+
+            st.markdown("</div>", unsafe_allow_html=True)
+
+        with match_col2:
+            st.markdown('<div class="req-panel">', unsafe_allow_html=True)
+            st.markdown("<h5>❌ Missing Requirements</h5>", unsafe_allow_html=True)
+
+            missing_required = missing_requirements.get("required_skills", [])
+            missing_preferred = missing_requirements.get("preferred_skills", [])
+
+            if missing_required:
+                st.markdown("<div class='fact'><b>Required</b></div>", unsafe_allow_html=True)
+                st.markdown(render_pills(missing_required, "miss"), unsafe_allow_html=True)
+            if missing_preferred:
+                st.markdown("<div class='fact' style='margin-top:8px;'><b>Preferred</b></div>", unsafe_allow_html=True)
+                st.markdown(render_pills(missing_preferred, "miss"), unsafe_allow_html=True)
+            if not missing_required and not missing_preferred:
+                st.markdown('<span class="pill-empty">Tidak ada</span>', unsafe_allow_html=True)
+
+            st.markdown("</div>", unsafe_allow_html=True)
+
+        # ---- recommendation reasons ----
+        st.markdown("<div style='margin-top:14px;'></div>", unsafe_allow_html=True)
+        st.markdown(
+            "<h5 style='font-family:var(--font-mono); font-size:0.72rem; "
+            "letter-spacing:0.1em; text-transform:uppercase; color:var(--text-dim);'>"
+            "💡 Recommendation Log</h5>",
+            unsafe_allow_html=True,
+        )
+
+        if recommendation_reasons:
+            log_html = "".join(f'<div class="log-line">{esc(reason)}</div>' for reason in recommendation_reasons)
+        else:
+            log_html = '<span class="pill-empty">Tidak ada</span>'
+
+        st.markdown(log_html, unsafe_allow_html=True)
+
+        st.markdown("</div>", unsafe_allow_html=True)  # close cand-card
 
 
 # ============================================================
@@ -566,6 +984,13 @@ with st.sidebar:
 
 # ============================================================
 # SCREENING PIPELINE
+#
+# Runs only on button click, then everything (results, job,
+# and the original CV bytes for each candidate) is stashed in
+# st.session_state. Rendering happens further below, reading
+# from session_state — this way selecting a candidate from the
+# dropdown or clicking a download/preview button (both trigger
+# a Streamlit rerun) does NOT wipe out the screening results.
 # ============================================================
 
 if run_screening:
@@ -575,6 +1000,11 @@ if run_screening:
         st.stop()
 
     profiles = []
+
+    # source (filename) -> {bytes, ext, filename} for the "Lihat CV"
+    # feature. Built from the original uploads, independent of the
+    # TemporaryDirectory which gets wiped once processing finishes.
+    cv_file_store = {}
 
     progress = st.progress(0)
     status = st.empty()
@@ -623,7 +1053,9 @@ if run_screening:
 
             safe_name = Path(uploaded_file.name).name
             path = Path(tmp) / safe_name
-            path.write_bytes(uploaded_file.getbuffer())
+
+            file_bytes = uploaded_file.getvalue()
+            path.write_bytes(file_bytes)
 
             try:
                 text = extract_text(str(path))
@@ -634,6 +1066,16 @@ if run_screening:
 
                 profile = parse_cv(text, uploaded_file.name)
                 profiles.append(profile)
+
+                # Keep the original bytes + extracted text, keyed by
+                # the filename (profile["source"]), so the candidate
+                # detail view can offer download + inline preview later.
+                cv_file_store[profile["source"]] = {
+                    "filename": uploaded_file.name,
+                    "ext": Path(uploaded_file.name).suffix.lower(),
+                    "bytes": file_bytes,
+                    "raw_text": text,
+                }
 
             except Exception as error:
                 st.error(f"Gagal memproses {uploaded_file.name}: {error}")
@@ -660,6 +1102,33 @@ if run_screening:
         except Exception as error:
             st.error(f"Screening gagal: {error}")
             st.stop()
+
+    # Map each candidate name -> source filename, so the render
+    # step (reading from session_state) can look up cv_file_store
+    # even though `results` itself doesn't carry the filename.
+    name_to_source = {p["name"]: p["source"] for p in profiles}
+
+    st.session_state["sc_results"] = results
+    st.session_state["sc_job"] = job
+    st.session_state["sc_cv_store"] = cv_file_store
+    st.session_state["sc_name_to_source"] = name_to_source
+    st.session_state["sc_has_run"] = True
+    # No candidate selected yet on a fresh run — user clicks
+    # "Detail" on a row to reveal that candidate's full card.
+    st.session_state["sc_selected_index"] = None
+    st.session_state["sc_ranking_page"] = 0
+
+
+# ============================================================
+# RENDER RESULTS (from session_state)
+# ============================================================
+
+if st.session_state.get("sc_has_run"):
+
+    results = st.session_state["sc_results"]
+    job = st.session_state["sc_job"]
+    cv_file_store = st.session_state.get("sc_cv_store", {})
+    name_to_source = st.session_state.get("sc_name_to_source", {})
 
     # ========================================================
     # PARSED JOB REQUIREMENTS
@@ -716,6 +1185,7 @@ if run_screening:
 
     shortlist_count = sum(1 for r in results if r.get("recommendation") == "SHORTLIST")
     review_count = sum(1 for r in results if r.get("recommendation") == "REVIEW")
+    reject_count = sum(1 for r in results if r.get("recommendation") == "REJECT")
     avg_score = (sum(r.get("overall_score", 0) for r in results) / len(results)) if results else 0
 
     render_html('<div class="section-label"><span class="num">04</span> Screening Summary</div>')
@@ -735,160 +1205,59 @@ if run_screening:
                 <div class="kpi-value accent">{review_count}</div>
             </div>
             <div class="kpi-card">
+                <div class="kpi-label">Reject</div>
+                <div class="kpi-value bad">{reject_count}</div>
+            </div>
+            <div class="kpi-card">
                 <div class="kpi-label">Avg. Match Score</div>
                 <div class="kpi-value teal">{avg_score:.0f}</div>
             </div>
         </div>
     """)
-
     # ========================================================
-    # CANDIDATE RANKING
+    # CANDIDATE RANKING — TABLE VIEW
     # ========================================================
 
     render_html('<div class="section-label"><span class="num">05</span> Candidate Ranking</div>')
 
-    for index, result in enumerate(results, start=1):
+    render_ranking_rows(results)
 
-        candidate = result.get("candidate", "Unknown")
-        overall_score = result.get("overall_score", 0)
-        recommendation = result.get("recommendation", "UNKNOWN")
-        mandatory_met = result.get("mandatory_requirements_met", False)
-        breakdown = result.get("score_breakdown", {})
-        matched_requirements = result.get("matched_requirements", {})
-        missing_requirements = result.get("missing_requirements", {})
-        candidate_profile = result.get("candidate_profile", {})
-        recommendation_reasons = result.get("recommendation_reasons", [])
+    # ---- detail shown for whichever row's "Detail" button was clicked ----
 
-        status_class = {
-            "SHORTLIST": "shortlist",
-            "REVIEW": "review",
-        }.get(recommendation, "other")
+    selected_index = st.session_state.get("sc_selected_index")
 
-        with st.container(border=False):
+    st.markdown("<div style='height:10px;'></div>", unsafe_allow_html=True)
 
-            st.markdown('<div class="cand-card">', unsafe_allow_html=True)
+    if selected_index is not None and 0 <= selected_index < len(results):
 
-            # ---- top row: rank / name / gauge / status ----
-            top_col1, top_col2 = st.columns([3, 1])
+        detail_header_col1, detail_header_col2 = st.columns([5, 1])
 
-            with top_col1:
-                render_html(f"""
-                    <div class="gauge-wrap">
-                        {render_gauge(overall_score)}
-                        <div>
-                            <div class="cand-rank">CANDIDATE #{index:02d}</div>
-                            <div class="cand-name">{esc(candidate)}</div>
-                        </div>
-                    </div>
-                """)
+        with detail_header_col1:
+            render_html('<div class="section-label"><span class="num">05a</span> Candidate Detail</div>')
 
-            with top_col2:
-                render_html(f"""
-                    <div style="text-align:right;">
-                        <span class="status-chip {status_class}">{esc(recommendation)}</span>
-                        <div class="mandatory-flag {'ok' if mandatory_met else 'no'}">
-                            {'✓ Mandatory met' if mandatory_met else '✕ Mandatory gap'}
-                        </div>
-                    </div>
-                """)
+        with detail_header_col2:
+            st.markdown("<div style='height:8px;'></div>", unsafe_allow_html=True)
+            if st.button("✕ Tutup Detail", key="close_detail_btn", use_container_width=True):
+                st.session_state["sc_selected_index"] = None
+                st.rerun()
 
-            # ---- score breakdown meters ----
-            meter_col1, meter_col2 = st.columns(2)
+        selected_result = results[selected_index]
 
-            with meter_col1:
-                render_html(
-                    render_meter("Required Skills", breakdown.get("required_skill_match", 0), "#3DD9C4")
-                    + render_meter("Preferred Skills", breakdown.get("preferred_skill_match", 0), "#F2A93B")
-                )
-
-            with meter_col2:
-                render_html(
-                    render_meter("Experience", breakdown.get("experience_match", 0), "#33C481")
-                    + render_meter("Education", breakdown.get("education_match", 0), "#8892AC")
-                )
-
-            render_html(
-                render_meter("Semantic Similarity", breakdown.get("semantic_similarity", 0), "#F2A93B")
-            )
-
-            # ---- candidate profile ----
-            with st.expander("👤 Candidate Profile"):
-
-                profile_col1, profile_col2 = st.columns(2)
-
-                with profile_col1:
-                    experience_years = candidate_profile.get("experience_years", 0)
-                    education = candidate_profile.get("education", {})
-
-                    render_html(f"""
-                        <div class="fact"><b>Experience:</b> {experience_years:.1f} years</div>
-                        <div class="fact"><b>Degree:</b> {esc(education.get("degree") or "-")}</div>
-                        <div class="fact"><b>Education Field:</b> {esc(display_education_fields(education))}</div>
-                    """)
-
-                with profile_col2:
-                    skills = candidate_profile.get("skills", [])
-                    render_html(f"""
-                        <div class="fact"><b>Detected Skills:</b></div>
-                        {render_pills(skills, "req")}
-                    """)
-
-            # ---- matched / missing requirements ----
-            match_col1, match_col2 = st.columns(2)
-
-            with match_col1:
-                st.markdown('<div class="req-panel">', unsafe_allow_html=True)
-                st.markdown("<h5>✅ Matched Requirements</h5>", unsafe_allow_html=True)
-
-                matched_required = matched_requirements.get("required_skills", [])
-                matched_preferred = matched_requirements.get("preferred_skills", [])
-
-                if matched_required:
-                    st.markdown("<div class='fact'><b>Required</b></div>", unsafe_allow_html=True)
-                    st.markdown(render_pills(matched_required, "match"), unsafe_allow_html=True)
-                if matched_preferred:
-                    st.markdown("<div class='fact' style='margin-top:8px;'><b>Preferred</b></div>", unsafe_allow_html=True)
-                    st.markdown(render_pills(matched_preferred, "match"), unsafe_allow_html=True)
-                if not matched_required and not matched_preferred:
-                    st.markdown('<span class="pill-empty">Tidak ada</span>', unsafe_allow_html=True)
-
-                st.markdown("</div>", unsafe_allow_html=True)
-
-            with match_col2:
-                st.markdown('<div class="req-panel">', unsafe_allow_html=True)
-                st.markdown("<h5>❌ Missing Requirements</h5>", unsafe_allow_html=True)
-
-                missing_required = missing_requirements.get("required_skills", [])
-                missing_preferred = missing_requirements.get("preferred_skills", [])
-
-                if missing_required:
-                    st.markdown("<div class='fact'><b>Required</b></div>", unsafe_allow_html=True)
-                    st.markdown(render_pills(missing_required, "miss"), unsafe_allow_html=True)
-                if missing_preferred:
-                    st.markdown("<div class='fact' style='margin-top:8px;'><b>Preferred</b></div>", unsafe_allow_html=True)
-                    st.markdown(render_pills(missing_preferred, "miss"), unsafe_allow_html=True)
-                if not missing_required and not missing_preferred:
-                    st.markdown('<span class="pill-empty">Tidak ada</span>', unsafe_allow_html=True)
-
-                st.markdown("</div>", unsafe_allow_html=True)
-
-            # ---- recommendation reasons ----
-            st.markdown("<div style='margin-top:14px;'></div>", unsafe_allow_html=True)
-            st.markdown(
-                "<h5 style='font-family:var(--font-mono); font-size:0.72rem; "
-                "letter-spacing:0.1em; text-transform:uppercase; color:var(--text-dim);'>"
-                "💡 Recommendation Log</h5>",
-                unsafe_allow_html=True,
-            )
-
-            if recommendation_reasons:
-                log_html = "".join(f'<div class="log-line">{esc(reason)}</div>' for reason in recommendation_reasons)
-            else:
-                log_html = '<span class="pill-empty">Tidak ada</span>'
-
-            st.markdown(log_html, unsafe_allow_html=True)
-
-            st.markdown("</div>", unsafe_allow_html=True)  # close cand-card
+        render_candidate_detail(
+            selected_result,
+            index=selected_index + 1,
+            name_to_source=name_to_source,
+            cv_file_store=cv_file_store,
+        )
+    else:
+        render_html("""
+            <div class="req-panel" style="text-align:center; padding:28px 20px;">
+                <p style="color:var(--text-dim); font-size:0.88rem; margin:0;">
+                    Klik <b style="color:var(--text);">Detail</b> pada salah satu kandidat
+                    di atas untuk melihat informasi lengkap.
+                </p>
+            </div>
+        """)
 
     # ========================================================
     # DOWNLOAD RESULTS JSON
@@ -903,6 +1272,7 @@ if run_screening:
         data=results_json,
         file_name="results.json",
         mime="application/json",
+        key="dl_results_json",
     )
 
 else:
