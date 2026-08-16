@@ -1,191 +1,130 @@
-# AI CV Screening PoC
+# 🛰️ CV Screening Console
 
-Sistem penyaringan CV berbasis AI yang dibuat sebagai **Proof of Concept (PoC)** untuk membantu proses seleksi kandidat berdasarkan kesesuaian antara CV dengan kebutuhan suatu posisi pekerjaan.
+**Solusi AI/ML untuk mengotomatisasi proses seleksi CV** — dari ekstraksi informasi, pencocokan kualifikasi terhadap Job Description, hingga rekomendasi kandidat siap wawancara. Dibangun sebagai Proof of Concept untuk Technical Assessment posisi AI Specialist.
 
-Sistem melakukan ekstraksi informasi dari CV, mencocokkan kualifikasi kandidat dengan Job Description, menghitung skor kesesuaian, dan memberikan rekomendasi kandidat.
-
-> Project ini berfungsi sebagai alat bantu screening awal. Keputusan akhir tetap dilakukan oleh recruiter atau hiring team.
-
----
-
-## Tujuan Project
-
-Project ini dibuat untuk:
-
-- Mengotomatisasi proses screening CV awal.
-- Mengurangi proses perbandingan CV dengan Job Description secara manual.
-- Mengidentifikasi kandidat yang memenuhi requirement.
-- Menampilkan requirement yang terpenuhi dan belum terpenuhi.
-- Memberikan ranking kandidat berdasarkan skor.
-- Menghasilkan hasil screening dalam format JSON.
+![Python](https://img.shields.io/badge/Python-3.10+-blue)
+![Streamlit](https://img.shields.io/badge/Streamlit-Dashboard-FF4B4B)
+![Status](https://img.shields.io/badge/Status-Proof%20of%20Concept-orange)
 
 ---
 
-## ⚙️ Fitur Utama
+## ✨ Fitur Utama
 
-- Ekstraksi teks dari CV PDF, DOCX, dan TXT.
-- Ekstraksi nama kandidat.
-- Ekstraksi skill.
-- Ekstraksi pendidikan dan bidang pendidikan.
-- Estimasi pengalaman kerja.
-- Normalisasi skill dan variasi penulisan.
-- Pencocokan required skills.
-- Pencocokan preferred skills.
-- Semantic similarity antara CV dan Job Description.
-- Weighted scoring.
-- Rekomendasi kandidat.
-- Export hasil ke JSON.
+- **Multi-format ingestion** — mendukung upload CV & JD dalam format PDF, DOCX, dan TXT
+- **Ekstraksi informasi otomatis** — nama kandidat, skill, pendidikan, dan pengalaman kerja diekstrak langsung dari teks dokumen
+- **Requirement dinamis dari JD** — kriteria required & preferred skill ditarik langsung dari teks Job Description, **bukan** dari kamus skill yang di-hardcode ke satu industri — sehingga bisa dipakai untuk posisi apa pun (AI/ML, HR, Sales, Finance, dst.)
+- **Layered matching strategy** — exact match → alias/sinonim terkurasi → fuzzy (typo-tolerant) match → semantic embedding fallback
+- **Semantic similarity** — menggunakan `sentence-transformers` (`all-MiniLM-L6-v2`) untuk menangkap kecocokan makna, bukan hanya kata yang sama persis
+- **Scoring tertimbang & transparan** — setiap kandidat mendapat skor 0–100 lengkap dengan breakdown per kriteria, evidence (kutipan CV), dan alasan rekomendasi
+- **Dashboard interaktif** — UI "Scan Console" bertema dark, menampilkan ranking kandidat, skor gauge, dan detail matched/missing requirements
+- **Export hasil** — seluruh hasil screening dapat diunduh dalam format JSON untuk keperluan audit atau integrasi lebih lanjut
 
 ---
 
-## Teknologi
-Python
-PyMuPDF
-Sentence Transformers
-Scikit-learn
-Regex
-JSON
+## 🧠 Metodologi Scoring
+
+Skor akhir dihitung dari lima komponen dengan bobot berikut:
+
+| Komponen | Bobot |
+|---|---|
+| Required Skills | 35% |
+| Experience | 25% |
+| Education | 15% |
+| Semantic Similarity | 15% |
+| Preferred Skills | 10% |
+
+**Ambang rekomendasi:**
+- 🟢 **SHORTLIST** — skor ≥ 75 **dan** seluruh mandatory requirement terpenuhi
+- 🟡 **REVIEW** — skor 60–74, layak ditinjau manual oleh HR
+- 🔴 **REJECT** — skor < 60 atau mandatory requirement belum terpenuhi
 
 ---
 
-##  Model AI/ML
+## 🏗️ Arsitektur
 
-Project ini menggunakan pendekatan **hybrid matching**, yaitu menggabungkan pencocokan berbasis rule/keyword dengan semantic similarity.
+```mermaid
+flowchart TD
+    A[Upload JD & CV<br/>PDF / DOCX / TXT] --> B[Ekstraksi Teks & Entitas<br/>extractor.py]
+    B --> C[Parsing JD Dinamis<br/>matcher.py]
+    C --> D[Matching Berlapis<br/>exact → fuzzy → semantic]
+    D --> E[Scoring & Ranking]
+    E --> F[Dashboard + Export JSON<br/>app.py]
 
-### 1. Sentence Transformer
-
-Untuk semantic similarity, sistem menggunakan model:
-Text **all-MiniLM-L6-v2**
-
-## Status
-
-Proof of Concept (PoC)
-
-Sistem saat ini berfokus pada proses screening dan ranking CV menggunakan data CV yang tersedia pada folder: **data/sample_cvs/**
-
+    style A fill:#141A2B,stroke:#F2A93B,color:#E7E9F2
+    style B fill:#141A2B,stroke:#3DD9C4,color:#E7E9F2
+    style C fill:#141A2B,stroke:#3DD9C4,color:#E7E9F2
+    style D fill:#141A2B,stroke:#F2A93B,color:#E7E9F2
+    style E fill:#141A2B,stroke:#F2A93B,color:#E7E9F2
+    style F fill:#141A2B,stroke:#33C481,color:#E7E9F2
+```
 ---
 
-# Panduan Menjalankan Sistem Screening CV
+## 🚀 Instalasi & Menjalankan
 
-## 1. Persiapan Lingkungan
-
-Sebelum menjalankan sistem, pastikan Anda berada di direktori proyek yang benar.
-
-### Membuat Virtual Environment
-
-Buka terminal Anda dan jalankan perintah berikut:
-
+### 1. Clone repository
 ```bash
-python -m venv .venv
-
+git clone https://github.com/Adipurnama7/cv-screening-console.git
+cd cv-screening-console
 ```
 
-### Aktivasi Virtual Environment
-
-Sesuaikan dengan sistem operasi yang Anda gunakan:
-
-* **Windows (PowerShell):**
-```powershell
-.venv\Scripts\Activate.ps1
-
-```
-
-
-* **macOS / Linux:**
+### 2. Buat virtual environment (opsional, disarankan)
 ```bash
-source .venv/bin/activate
-
+python -m venv venv
+source venv/bin/activate   # Windows: venv\Scripts\activate
 ```
 
-### Install Dependency
-
-Instal semua pustaka yang diperlukan:
-
+### 3. Install dependencies
 ```bash
 pip install -r requirements.txt
-
 ```
 
----
-
-## 2. Menjalankan Screening
-
-Gunakan perintah berikut untuk memulai proses screening CV berdasarkan *Job Description* (JD) yang telah disediakan:
-
+### 4. Jalankan aplikasi
 ```bash
-python screen_cv.py --jd data/job_description.txt --cv-dir data/sample_cvs
-
+streamlit run app.py
 ```
 
-**Keterangan Argumen:**
+Aplikasi akan terbuka otomatis di `http://localhost:8501`.
 
-* `--jd`: Path menuju file teks deskripsi pekerjaan.
-* `--cv-dir`: Direktori yang berisi file-file CV kandidat.
+## ⚖️ Etika & Mitigasi Bias
+
+Desain sistem ini secara sengaja menghindari beberapa risiko bias umum pada tools screening otomatis:
+
+ **Tanpa atribut sensitif** — nama, foto, gender, usia, dan afiliasi tidak pernah dijadikan fitur penilaian
+ **Transparan & bisa diaudit** — setiap skor disertai evidence dan reasons yang bisa ditelusuri ke teks asli CV
+ **Human-in-the-loop** — output sistem adalah rekomendasi berjenjang (Shortlist/Review/Reject), bukan keputusan final
+**Requirement dinamis per-JD** — mengurangi risiko bias struktural terhadap kandidat dari latar belakang non-konvensional
+**Jejak audit** — seluruh hasil dapat diekspor untuk keperluan compliance atau audit bias di kemudian hari
 
 ---
 
-## 3. Hasil Output
+## 🗺️ Roadmap
 
-Hasil proses screening akan disimpan secara otomatis dalam file **`results.json`**.
-
-Berikut adalah contoh format data yang dihasilkan oleh sistem:
-
-```json
-{
-    "candidate": "Bayu",
-    "overall_score": 92.22,
-    "recommendation": "SHORTLIST",
-    "mandatory_requirements_met": true
-}
-
-```
-
-### Penjelasan Field:
-
-| Field | Deskripsi |
-| --- | --- |
-| `candidate` | Nama kandidat yang di-*screening*. |
-| `overall_score` | Skor kecocokan kandidat terhadap JD (0-100). |
-| `recommendation` | Keputusan sistem (`SHORTLIST` atau `REJECT`). |
-| `mandatory_requirements_met` | Status pemenuhan syarat wajib (`true`/`false`). |
+- [ ] Integrasi ingest CV otomatis via API job portal resmi / email inbox parsing / webhook ATS
+- [ ] Containerization untuk pemrosesan paralel skala besar
+- [ ] Database riwayat kandidat + role-based access untuk tim HR
+- [ ] Monitoring kualitas skor & audit bias berkala pasca-deploy
 
 ---
 
+## 🛠️ Tech Stack
 
+- **Frontend/Dashboard:** Streamlit
+- **NLP/ML:** sentence-transformers, scikit-learn (cosine similarity)
+- **Document Parsing:** PyMuPDF (`fitz`), python-docx
+- **Matching:** regex-based extraction, difflib (fuzzy matching), semantic embeddings
 
-## Alur Sistem
+---
 
-```text
-CV Kandidat
-     │
-     ▼
-Ekstraksi Teks
-     │
-     ▼
-Ekstraksi Profil Kandidat
-     │
-     ├── Nama
-     ├── Skill
-     ├── Pendidikan
-     └── Pengalaman
-     │
-     ▼
-Normalisasi Skill
-     │
-     ▼
-Pencocokan Requirement
-     │
-     ├── Required Skills
-     └── Preferred Skills
-     │
-     ▼
-Semantic Similarity
-     │
-     ▼
-Weighted Scoring
-     │
-     ▼
-Recommendation
-     │
-     ▼
-results.json
+## 👤 Kontak
+
+**Adi Purnama**
+- Email: [adipurnamaa4@gmail.com](mailto:adipurnamaa4@gmail.com)
+- GitHub: [github.com/Adipurnama7](https://github.com/Adipurnama7)
+- LinkedIn: [linkedin.com/in/adi-purnama-83674b278](https://linkedin.com/in/adi-purnama-83674b278)
+- Portfolio: [adipurnama7.github.io/portopolio](https://adipurnama7.github.io/portopolio)
+- Live Demo: [AI CV Screening POC](https://adipurnama7-ai-cv-screening-poc-app-txljx9.streamlit.app/)
+---
+
+## 📄 Lisensi
+
+Proyek ini dibuat sebagai Proof of Concept untuk keperluan Technical Assessment.
